@@ -24,3 +24,7 @@ pids/
 # Claude Code configuration
 .claude
 .idea
+
+#Local
+todo.txt
+artifacts/
