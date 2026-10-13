@@ -2,8 +2,7 @@ import mineflayer from 'mineflayer';
 import pathfinderPkg from 'mineflayer-pathfinder';
 const { pathfinder, Movements } = pathfinderPkg;
 import minecraftData from 'minecraft-data';
-
-const SUPPORTED_MINECRAFT_VERSION = '1.21.11';
+import { monitorProtocolDecode, type ProtocolClientLike } from './services/protocol-decode-monitor.js';
 
 type ConnectionState = 'connected' | 'connecting' | 'disconnected';
 
@@ -58,6 +57,7 @@ export class BotConnection {
     };
 
     this.bot = mineflayer.createBot(botOptions);
+    monitorProtocolDecode(this.bot._client as unknown as ProtocolClientLike);
     this.state = 'connecting';
     this.isReconnecting = false;
 
@@ -173,7 +173,7 @@ export class BotConnection {
         `Please ensure:\n` +
         `1. Minecraft server is running on ${this.config.host}:${this.config.port}\n` +
         `2. Server is accessible from this machine\n` +
-        `3. Server version is compatible (latest supported: ${SUPPORTED_MINECRAFT_VERSION})\n\n` +
+        `3. Server version is supported by the installed Mineflayer and minecraft-data versions\n\n` +
         `For setup instructions, visit: https://github.com/yuniko-software/minecraft-mcp-server`;
 
       return { connected: false, message: errorMessage };

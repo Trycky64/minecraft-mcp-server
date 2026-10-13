@@ -15,7 +15,7 @@
 ___
 
 > [!IMPORTANT]
-> Currently supports Minecraft version 1.21.11. Newer versions may not work with this MCP server, but we will add support as soon as possible.
+> Processia fork validation target: Minecraft Java 1.21.1 with NeoForge 21.1.259. The active server version is negotiated at runtime; registry resolution uses the matching installed `minecraft-data` version. See [the registry integration notes](docs/processia-registry-p1.md) for modded-registry limitations.
 
 https://github.com/user-attachments/assets/6f17f329-3991-4bc7-badd-7cde9aacb92f
 

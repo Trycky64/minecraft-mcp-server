@@ -6,6 +6,23 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { BotConnection } from '../src/bot-connection.js';
 import type mineflayer from 'mineflayer';
 import { Vec3 } from 'vec3';
+import { MinecraftRegistryService } from '../src/services/minecraft-registry-service.js';
+import type { RuntimeRegistryContext } from '../src/services/runtime-registry-service.js';
+import { RuntimeRegistryService } from '../src/services/runtime-registry-service.js';
+
+function staticRegistryContext(version: string): RuntimeRegistryContext {
+  return {
+    connected: true,
+    minecraftVersion: version,
+    protocolVersion: version,
+    protocolNumber: null,
+    registryEpoch: null,
+    serverIdentity: 'test:25565',
+    registryService: MinecraftRegistryService.withMinecraftData([version]),
+    bridgeAvailable: false,
+    protocolDecode: { inventory: 'unverified', issues: [] },
+  };
+}
 
 test('registerBlockTools registers place-block tool', (t) => {
   const mockServer = {
@@ -145,6 +162,58 @@ test('get-block-info handles missing block', async (t) => {
   t.true(result.content[0].text.includes('No block information found'));
 });
 
+test('get-block-info preserves raw unknown state IDs and reports Mineflayer undefined type', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  const mockBot = {
+    version: '1.21.1', protocolVersion: '1.21.1',
+    blockAt: sinon.stub().returns({ name: 'unknown', type: undefined, stateId: 999999, position: new Vec3(1, 2, 3) }),
+  } as unknown as mineflayer.Bot;
+  const runtime = new RuntimeRegistryService({ getBot: () => mockBot, isConnected: () => true, getConfig: () => ({ host: 'localhost', port: 25565 }) });
+  registerBlockTools(factory, () => mockBot, () => runtime.getContext());
+  const call = (mockServer.tool as sinon.SinonStub).getCalls().find((item) => item.args[0] === 'get-block-info')!;
+  const result = await call.args[3]({ x: 1, y: 2, z: 3 });
+  const details = JSON.parse(result.content[0].text.split('Registry details (JSON):\n')[1]);
+  t.is(details.rawStateId, 999999);
+  t.is(details.rawBlockId, null);
+  t.is(details.namespacedId, null);
+  t.is(details.resolutionStatus, 'unresolved');
+  t.false(details.mineflayerNameReliable);
+});
+
+test('get-block-info keeps static vanilla candidates separate from runtime numeric resolution', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  const mockBot = {
+    version: '1.21.1', entity: { position: new Vec3(0, 64, 0) },
+    blockAt: sinon.stub().returns({ name: 'stone', type: 1, stateId: 1, position: new Vec3(0, 64, 0), getProperties: () => ({}) }),
+  } as unknown as mineflayer.Bot;
+  const context = staticRegistryContext('1.21.1');
+  context.registryEpoch = 'session:runtime';
+  registerBlockTools(factory, () => mockBot, () => context);
+  const call = (mockServer.tool as sinon.SinonStub).getCalls().find((item) => item.args[0] === 'get-block-info')!;
+  const result = await call.args[3]({ x: 0, y: 64, z: 0 });
+  const details = JSON.parse(result.content[0].text.split('Registry details (JSON):\n')[1]);
+  t.is(details.rawStateId, 1);
+  t.is(details.namespacedId, null);
+  t.is(details.resolutionStatus, 'unresolved');
+  t.is(details.staticCandidate.namespacedId, 'minecraft:stone');
+  t.false(details.runtimeNumericIdVerified);
+});
+
+test('get-block-info distinguishes an unloaded chunk from an air block', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  const mockBot = { blockAt: sinon.stub().returns(null) } as unknown as mineflayer.Bot;
+  registerBlockTools(factory, () => mockBot);
+  const call = (mockServer.tool as sinon.SinonStub).getCalls().find((item) => item.args[0] === 'get-block-info')!;
+  const result = await call.args[3]({ x: 1, y: 2, z: 3 });
+  t.true(result.content[0].text.includes('chunk is not loaded'));
+});
+
 test('dig-block handles air blocks', async (t) => {
   const mockServer = {
     tool: sinon.stub()
@@ -227,6 +296,52 @@ test('place-block floors input coordinates before self-placement guard', async (
   t.true(result.content[0].text.includes("can't place a block"));
 });
 
+test('place-block refuses a modded item until its runtime mapping is authoritative for the session', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  const mockBot = {
+    version: '1.21.1', entity: { position: new Vec3(0, 64, 0) },
+    blockAt: sinon.stub(), inventory: { items: sinon.stub().returns([]) },
+    placeBlock: sinon.stub(),
+  } as unknown as mineflayer.Bot;
+  const runtime = new RuntimeRegistryService({ getBot: () => mockBot, isConnected: () => true, getConfig: () => ({ host: '127.0.0.1', port: 25565 }) });
+  registerBlockTools(factory, () => mockBot, () => runtime.getContext());
+  const call = (mockServer.tool as sinon.SinonStub).getCalls().find((item) => item.args[0] === 'place-block')!;
+  const result = await call.args[3]({ x: 3, y: 64, z: 3, itemId: 'processia:crusher' });
+  t.true(result.content[0].text.includes('authoritative item-to-ID mapping has not been observed'));
+  t.false(mockBot.placeBlock.called);
+});
+
+test('place-block selects a modded stack only from an authoritative current-epoch mapping', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  const stack = { type: 7001, name: 'unknown', count: 1, slot: 36 };
+  const reference = { name: 'stone' };
+  const mockBot = {
+    version: '1.21.1', entity: { position: new Vec3(0, 64, 0) },
+    blockAt: sinon.stub().callsFake((pos: Vec3) => pos.x === 3 && pos.y === 64 && pos.z === 3 ? { name: 'air' } : reference),
+    inventory: { items: sinon.stub().returns([stack]) }, heldItem: null,
+    canSeeBlock: sinon.stub().returns(true), lookAt: sinon.stub().resolves(),
+    equip: sinon.stub().resolves(), placeBlock: sinon.stub().resolves(),
+  } as unknown as mineflayer.Bot;
+  const runtime = new RuntimeRegistryService({ getBot: () => mockBot, isConnected: () => true, getConfig: () => ({ host: '127.0.0.1', port: 25565 }) });
+  const context = runtime.getContext();
+  const epoch = context.registryEpoch!;
+  runtime.replaceRuntimeSnapshot({
+    source: 'neoforge-bridge', minecraftVersion: '1.21.1', registryEpoch: epoch,
+    availableRegistries: ['item'], registryCoverage: { item: 'partial' },
+    entries: [{ kind: 'item', minecraftVersion: '1.21.1', namespacedId: 'processia:crusher', numericId: 7001, registryEpoch: epoch, provenance: { source: 'neoforge-bridge', minecraftVersion: '1.21.1', registryEpoch: epoch } }],
+  });
+  registerBlockTools(factory, () => mockBot, () => runtime.getContext());
+  const call = (mockServer.tool as sinon.SinonStub).getCalls().find((item) => item.args[0] === 'place-block')!;
+  const result = await call.args[3]({ x: 3, y: 64, z: 3, itemId: 'processia:crusher' });
+  t.true(result.content[0].text.includes('Placed block'));
+  t.true(mockBot.equip.calledWith(stack, 'hand'));
+  t.true(mockBot.placeBlock.calledOnce);
+});
+
 test('find-blocks returns not found when block not found', async (t) => {
   const mockServer = {
     tool: sinon.stub()
@@ -238,11 +353,13 @@ test('find-blocks returns not found when block not found', async (t) => {
   
   const mockBot = {
     version: '1.21',
-    findBlock: sinon.stub().returns(null)
+    entity: { position: new Vec3(0, 64, 0) },
+    game: { minY: 0, height: 256 },
+    blockAt: sinon.stub().returns({ stateId: 0, type: 0, name: 'air' }),
   } as Partial<mineflayer.Bot>;
   const getBot = () => mockBot as mineflayer.Bot;
 
-  registerBlockTools(factory, getBot);
+  registerBlockTools(factory, getBot, () => staticRegistryContext('1.21'));
 
   const toolCalls = (mockServer.tool as sinon.SinonStub).getCalls();
   const findBlockCall = toolCalls.find(call => call.args[0] === 'find-blocks');
@@ -250,7 +367,9 @@ test('find-blocks returns not found when block not found', async (t) => {
 
   const result = await executor({ blockType: 'diamond_ore', maxDistance: 16 });
 
-  t.true(result.content[0].text.includes('No diamond_ore found'));
+  t.true(result.content[0].text.includes('Search for diamond_ore inconclusive'));
+  const details = JSON.parse(result.content[0].text.split('\n').at(-1)!);
+  t.is(details.mappingConfidence, 'version-static-unverified');
 });
 
 test('find-blocks returns multiple results when count is greater than one', async (t) => {
@@ -265,11 +384,12 @@ test('find-blocks returns multiple results when count is greater than one', asyn
   const mockBot = {
     version: '1.21',
     entity: { position: new Vec3(0, 64, 0) },
-    findBlocks: sinon.stub().returns([new Vec3(1, 64, 0), new Vec3(2, 64, 0)])
+    game: { minY: 0, height: 256 },
+    blockAt: sinon.stub().returns({ stateId: 1, type: 1, name: 'stone' }),
   } as unknown as Partial<mineflayer.Bot>;
   const getBot = () => mockBot as mineflayer.Bot;
 
-  registerBlockTools(factory, getBot);
+  registerBlockTools(factory, getBot, () => staticRegistryContext('1.21'));
 
   const toolCalls = (mockServer.tool as sinon.SinonStub).getCalls();
   const findBlockCall = toolCalls.find(call => call.args[0] === 'find-blocks');
@@ -277,12 +397,13 @@ test('find-blocks returns multiple results when count is greater than one', asyn
 
   const result = await executor({ blockType: 'stone', maxDistance: 16, count: 2 });
 
-  t.true(result.content[0].text.includes('Found 2 stone block(s)'));
-  t.true(result.content[0].text.includes('(1, 64, 0)'));
-  t.true(result.content[0].text.includes('(2, 64, 0)'));
+  t.true(result.content[0].text.includes('Static candidate 2 stone block(s)'));
+  const details = JSON.parse(result.content[0].text.split('Registry search details (JSON):\n')[1]);
+  t.is(details.results.length, 2);
+  t.is(details.status, 'found-static-candidate-unverified');
 });
 
-test('find-blocks clamps oversized count before calling bot.findBlocks', async (t) => {
+test('find-blocks clamps oversized count during bounded loaded-world scanning', async (t) => {
   const mockServer = {
     tool: sinon.stub()
   } as unknown as McpServer;
@@ -291,22 +412,83 @@ test('find-blocks clamps oversized count before calling bot.findBlocks', async (
   } as unknown as BotConnection;
   const factory = new ToolFactory(mockServer, mockConnection);
 
-  const findBlocksStub = sinon.stub().returns([new Vec3(1, 64, 0)]);
   const mockBot = {
     version: '1.21',
     entity: { position: new Vec3(0, 64, 0) },
-    findBlocks: findBlocksStub
+    game: { minY: 0, height: 256 },
+    blockAt: sinon.stub().returns({ stateId: 1, type: 1, name: 'stone' }),
   } as unknown as Partial<mineflayer.Bot>;
   const getBot = () => mockBot as mineflayer.Bot;
 
-  registerBlockTools(factory, getBot);
+  registerBlockTools(factory, getBot, () => staticRegistryContext('1.21'));
 
   const toolCalls = (mockServer.tool as sinon.SinonStub).getCalls();
   const findBlockCall = toolCalls.find(call => call.args[0] === 'find-blocks');
   const executor = findBlockCall!.args[3];
 
-  await executor({ blockType: 'stone', maxDistance: 16, count: 10_000 });
+  const result = await executor({ blockType: 'stone', maxDistance: 16, count: 10_000 });
 
-  const findBlocksArgs = findBlocksStub.firstCall.args[0];
-  t.is(findBlocksArgs.count, 256);
+  const details = JSON.parse(result.content[0].text.split('Registry search details (JSON):\n')[1]);
+  t.is(details.results.length, 256);
+  t.true(details.scanned <= 150_000);
+});
+
+test('find-blocks scans known synthetic Processia state IDs in loaded blocks only', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  const mockBot = {
+    version: '1.21.1', protocolVersion: '1.21.1',
+    entity: { position: new Vec3(0, 64, 0) }, game: { minY: 0, height: 256 },
+    world: { getColumnAt: sinon.stub().returns(null) },
+    blockAt: sinon.stub().returns({ stateId: 9101, type: undefined, name: 'unknown' }),
+  } as unknown as mineflayer.Bot;
+  const runtime = new RuntimeRegistryService({ getBot: () => mockBot, isConnected: () => true, getConfig: () => ({ host: '127.0.0.1', port: 25565 }) });
+  const context = runtime.getContext();
+  const epoch = context.registryEpoch!;
+  runtime.replaceRuntimeSnapshot({
+    source: 'neoforge-bridge', minecraftVersion: '1.21.1', registryEpoch: epoch,
+    availableRegistries: ['block', 'blockState'], registryCoverage: { block: 'partial', blockState: 'partial' },
+    entries: [
+      { kind: 'block', minecraftVersion: '1.21.1', namespacedId: 'processia:crusher', numericId: 810, registryEpoch: epoch, provenance: { source: 'neoforge-bridge', minecraftVersion: '1.21.1', registryEpoch: epoch } },
+      { kind: 'blockState', minecraftVersion: '1.21.1', namespacedId: 'processia:crusher', numericId: 9100, registryEpoch: epoch, provenance: { source: 'neoforge-bridge', minecraftVersion: '1.21.1', registryEpoch: epoch } },
+      { kind: 'blockState', minecraftVersion: '1.21.1', namespacedId: 'processia:crusher', numericId: 9101, registryEpoch: epoch, provenance: { source: 'neoforge-bridge', minecraftVersion: '1.21.1', registryEpoch: epoch } },
+    ],
+  });
+  registerBlockTools(factory, () => mockBot, () => runtime.getContext());
+  const call = (mockServer.tool as sinon.SinonStub).getCalls().find((item) => item.args[0] === 'find-blocks')!;
+  const result = await call.args[3]({ blockType: 'processia:crusher', maxDistance: 2, count: 1 });
+  t.true(result.content[0].text.includes('Found 1 processia:crusher block(s)'));
+  t.false((mockBot.world.getColumnAt as sinon.SinonStub).called);
+});
+
+test('find-blocks does not claim a modded block is absent without a state mapping', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  const mockBot = { version: '1.21.1', entity: { position: new Vec3(0, 64, 0) } } as unknown as mineflayer.Bot;
+  const context = staticRegistryContext('1.21.1');
+  registerBlockTools(factory, () => mockBot, () => context);
+  const call = (mockServer.tool as sinon.SinonStub).getCalls().find((item) => item.args[0] === 'find-blocks')!;
+  const result = await call.args[3]({ blockType: 'processia:crusher' });
+  const details = JSON.parse(result.content[0].text);
+  t.is(details.status, 'unresolved');
+  t.is(details.requested, 'processia:crusher');
+});
+
+test('find-blocks reports incomplete coverage when the bounded area contains unloaded chunks', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  const mockBot = {
+    version: '1.21', entity: { position: new Vec3(0, 64, 0) }, game: { minY: 0, height: 256 },
+    blockAt: sinon.stub().returns(null),
+  } as unknown as mineflayer.Bot;
+  registerBlockTools(factory, () => mockBot, () => staticRegistryContext('1.21'));
+  const call = (mockServer.tool as sinon.SinonStub).getCalls().find((item) => item.args[0] === 'find-blocks')!;
+  const result = await call.args[3]({ blockType: 'stone', maxDistance: 2 });
+  t.true(result.content[0].text.includes('Search for stone inconclusive'));
+  const details = JSON.parse(result.content[0].text.split('\n').at(-1)!);
+  t.is(details.status, 'inconclusive');
+  t.is(details.reason, 'loaded-area-incomplete');
 });

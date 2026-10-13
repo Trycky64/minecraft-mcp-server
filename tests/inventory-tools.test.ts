@@ -5,6 +5,9 @@ import { ToolFactory } from '../src/tool-factory.js';
 import { BotConnection } from '../src/bot-connection.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type mineflayer from 'mineflayer';
+import { RuntimeRegistryService } from '../src/services/runtime-registry-service.js';
+import { EventEmitter } from 'node:events';
+import { monitorProtocolDecode } from '../src/services/protocol-decode-monitor.js';
 
 test('registerInventoryTools registers list-inventory tool', (t) => {
   const mockServer = {
@@ -103,6 +106,72 @@ test('list-inventory returns items with counts', async (t) => {
   t.true(result.content[0].text.includes('diamond_pickaxe'));
   t.true(result.content[0].text.includes('cobblestone'));
   t.true(result.content[0].text.includes('64'));
+});
+
+test('list-inventory marks a snapshot incomplete after a dropped inventory packet', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  const protocol = Object.assign(new EventEmitter(), {
+    state: 'play', version: '1.21.1',
+    deserializer: { parsePacketBuffer() { throw Object.assign(new Error('Malformed slot'), { name: 'PartialReadError' }); } },
+  });
+  monitorProtocolDecode(protocol);
+  t.throws(() => protocol.deserializer.parsePacketBuffer(Buffer.from([0x13])), { name: 'PartialReadError' });
+  const mockBot = { version: '1.21.1', _client: protocol, inventory: { items: () => [] } } as unknown as mineflayer.Bot;
+  const runtime = new RuntimeRegistryService({ getBot: () => mockBot, isConnected: () => true, getConfig: () => ({ host: '127.0.0.1', port: 25565 }) });
+  registerInventoryTools(factory, () => mockBot, () => runtime.getContext());
+  const call = (mockServer.tool as sinon.SinonStub).getCalls().find(item => item.args[0] === 'list-inventory')!;
+  const result = await call.args[3]({});
+  const details = JSON.parse(result.content[0].text.split('Registry details (JSON):\n')[1]);
+  t.true(result.content[0].text.includes('INCOMPLETE'));
+  t.is(details.snapshotStatus, 'incomplete');
+  t.is(details.items.length, 0);
+});
+
+test('list-inventory separates observed numeric IDs from static vanilla candidates', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  const mockBot = {
+    version: '1.21.1',
+    protocolVersion: '1.21.1',
+    inventory: { items: () => [{ name: 'diamond', type: 805, count: 3, slot: 9, components: { custom: 'test' } }] },
+  } as unknown as mineflayer.Bot;
+  const runtime = new RuntimeRegistryService({ getBot: () => mockBot, isConnected: () => true, getConfig: () => ({ host: '127.0.0.1', port: 25565 }) });
+  registerInventoryTools(factory, () => mockBot, () => runtime.getContext());
+  const call = (mockServer.tool as sinon.SinonStub).getCalls().find((item) => item.args[0] === 'list-inventory')!;
+  const result = await call.args[3]({});
+  const details = JSON.parse(result.content[0].text.split('Registry details (JSON):\n')[1]);
+  t.is(details.items[0].rawNumericId, 805);
+  t.is(details.items[0].quantity, 3);
+  t.is(details.items[0].slot, 9);
+  t.is(details.items[0].namespacedId, null);
+  t.is(details.items[0].staticCandidate.namespacedId, 'minecraft:diamond');
+  t.is(details.items[0].staticCandidate.numericId, 805);
+  t.is(details.items[0].identityConfidence, 'version-static-candidate');
+  t.is(details.items[0].mineflayerNameConfidence, 'version-static');
+  t.false(details.items[0].runtimeNumericIdVerified);
+  t.deepEqual(details.items[0].components, { custom: 'test' });
+});
+
+test('list-inventory preserves unknown modded item IDs without inventing a name', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  const mockBot = {
+    version: '1.21.1', protocolVersion: '1.21.1',
+    inventory: { items: () => [{ name: 'unknown', type: 999999, count: 1, slot: 4 }] },
+  } as unknown as mineflayer.Bot;
+  const runtime = new RuntimeRegistryService({ getBot: () => mockBot, isConnected: () => true, getConfig: () => ({ host: 'localhost', port: 25565 }) });
+  registerInventoryTools(factory, () => mockBot, () => runtime.getContext());
+  const call = (mockServer.tool as sinon.SinonStub).getCalls().find((item) => item.args[0] === 'list-inventory')!;
+  const result = await call.args[3]({});
+  const details = JSON.parse(result.content[0].text.split('Registry details (JSON):\n')[1]);
+  t.is(details.items[0].rawNumericId, 999999);
+  t.is(details.items[0].namespacedId, null);
+  t.is(details.items[0].resolutionStatus, 'unresolved');
+  t.false(details.items[0].mineflayerNameReliable);
 });
 
 test('equip-item calls bot.equip', async (t) => {

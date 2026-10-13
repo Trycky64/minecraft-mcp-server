@@ -19,16 +19,19 @@ export class ToolFactory {
     description: string,
     schema: Record<string, unknown>,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    executor: (args: any) => Promise<McpResponse>
+    executor: (args: any) => Promise<McpResponse>,
+    options: { requiresConnection?: boolean } = {},
   ): void {
     this.server.tool(name, description, schema, async (args: unknown): Promise<McpResponse> => {
-      const connectionCheck = await this.connection.checkConnectionAndReconnect();
+      if (options.requiresConnection !== false) {
+        const connectionCheck = await this.connection.checkConnectionAndReconnect();
 
-      if (!connectionCheck.connected) {
-        return {
-          content: [{ type: "text", text: connectionCheck.message! }],
-          isError: true
-        };
+        if (!connectionCheck.connected) {
+          return {
+            content: [{ type: "text", text: connectionCheck.message! }],
+            isError: true
+          };
+        }
       }
 
       try {

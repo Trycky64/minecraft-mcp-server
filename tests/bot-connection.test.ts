@@ -1,6 +1,9 @@
 import test from 'ava';
 import sinon from 'sinon';
 import { BotConnection } from '../src/bot-connection.js';
+import mineflayer from 'mineflayer';
+import { EventEmitter } from 'node:events';
+import { getProtocolDecodeStatus } from '../src/services/protocol-decode-monitor.js';
 
 test('constructor initializes with correct state', (t) => {
   const config = { host: 'localhost', port: 25565, username: 'TestBot' };
@@ -11,6 +14,29 @@ test('constructor initializes with correct state', (t) => {
   t.deepEqual(connection.getConfig(), config);
   t.is(connection.getBot(), null);
   t.false(connection.isConnected());
+});
+
+test('connection installs protocol decode monitoring on each new bot', (t) => {
+  const client = Object.assign(new EventEmitter(), {
+    state: 'play', version: '1.21.1',
+    deserializer: { parsePacketBuffer() { throw Object.assign(new Error('Malformed inventory packet'), { name: 'PartialReadError' }); } },
+    setSerializer() { this.deserializer = { parsePacketBuffer() { return {}; } }; },
+  });
+  const bot = Object.assign(new EventEmitter(), { _client: client }) as unknown as mineflayer.Bot;
+  const createBot = sinon.stub(mineflayer, 'createBot').returns(bot);
+  try {
+    const connection = new BotConnection(
+      { host: '127.0.0.1', port: 25565, username: 'TestBot' },
+      { onLog: sinon.stub(), onChatMessage: sinon.stub() },
+    );
+    connection.connect();
+    t.throws(() => client.deserializer.parsePacketBuffer(Buffer.from([0x13])), { name: 'PartialReadError' });
+    const status = getProtocolDecodeStatus(client);
+    t.is(status.inventory, 'incomplete');
+    t.is(status.issues[0]?.packetName, 'window_items');
+  } finally {
+    createBot.restore();
+  }
 });
 
 test('constructor accepts custom reconnect delay', (t) => {

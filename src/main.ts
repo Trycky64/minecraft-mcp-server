@@ -17,6 +17,12 @@ import { registerFlightTools } from './tools/flight-tools.js';
 import { registerGameStateTools } from './tools/gamestate-tools.js';
 import { registerCraftingTools } from './tools/crafting-tools.js';
 import { registerFurnaceTools } from './tools/furnace-tools.js';
+import { RuntimeRegistryService } from './services/runtime-registry-service.js';
+import { registerRegistryTools } from './tools/registry-tools.js';
+import { NeoForgeBridgeIntegration } from './bridge/neoforge-bridge-client.js';
+import { registerBridgeTools } from './tools/bridge-tools.js';
+import { GuiHarnessClient, readGuiClientConfig } from './gui/gui-harness-client.js';
+import { registerGuiTools } from './tools/gui-tools.js';
 
 setupStdioFiltering();
 
@@ -49,21 +55,30 @@ async function main() {
 
   const factory = new ToolFactory(server, connection);
   const getBot = () => connection.getBot()!;
+  const runtimeRegistry = new RuntimeRegistryService(connection);
+  const getRegistryContext = () => runtimeRegistry.getContext();
+  const bridge = new NeoForgeBridgeIntegration(runtimeRegistry);
+  const guiHarness = new GuiHarnessClient(readGuiClientConfig(), runtimeRegistry);
 
   registerPositionTools(factory, getBot);
-  registerInventoryTools(factory, getBot);
-  registerBlockTools(factory, getBot);
+  registerInventoryTools(factory, getBot, getRegistryContext);
+  registerBlockTools(factory, getBot, getRegistryContext);
   registerEntityTools(factory, getBot);
   registerChatTools(factory, getBot, messageStore);
   registerFlightTools(factory, getBot);
   registerGameStateTools(factory, getBot);
   registerCraftingTools(factory, getBot);
   registerFurnaceTools(factory, getBot);
+  registerRegistryTools(factory, runtimeRegistry);
+  registerBridgeTools(factory, bridge);
+  registerGuiTools(factory, guiHarness, bridge, runtimeRegistry);
 
   process.stdin.on('end', () => {
-    connection.cleanup();
-    log('info', 'MCP Client has disconnected. Shutting down...');
-    process.exit(0);
+    void Promise.allSettled([bridge.close(), guiHarness.shutdown()]).finally(() => {
+      connection.cleanup();
+      log('info', 'MCP Client has disconnected. Shutting down...');
+      process.exit(0);
+    });
   });
 
   const transport = new StdioServerTransport();
