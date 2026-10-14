@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
+import { lstatSync, readFileSync } from 'node:fs';
 import type {
-  BridgeHandshakeRequest, BridgeHandshakeResponse, BridgeMachineInspection,
+  BridgeCapabilities, BridgeHandshakeRequest, BridgeHandshakeResponse, BridgeMachineInspection,
   BridgeMachineInspectionRequest, BridgeRecipePage, BridgeRegistryPage,
   BridgeMachineSearchPage, BridgeMachineSearchRequest,
 } from './bridge-types.js';
@@ -10,16 +11,18 @@ import type { RegistryEntry, RegistryKind, RegistrySourceSnapshot } from '../ser
 import { RuntimeRegistryService } from '../services/runtime-registry-service.js';
 
 const registryKinds: RegistryKind[] = ['item', 'block', 'blockState', 'blockEntityType', 'menu', 'entity', 'recipeSerializer', 'recipeType'];
-const MAX_BRIDGE_REGISTRY_ENTRIES = 50_000;
+const MAX_BRIDGE_REGISTRY_ENTRIES = 100_000;
 const responseBase = z.object({ schemaVersion: z.literal(BRIDGE_PROTOCOL_VERSION), minecraftVersion: z.string(), neoForgeVersion: z.string(), serverIdentity: z.string(), minecraftEndpoint: z.string(), registryEpoch: z.string().uuid(), observedAt: z.string().datetime({ offset: true }) });
 const handshakeSchema = responseBase.extend({ sessionId: z.string().uuid() });
-const rowSchema = z.object({ namespacedId: z.string().regex(/^[a-z0-9_.-]+:[a-z0-9/._-]+$/), numericId: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(), kind: z.string(), blockStateProperties: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional() });
+const rowSchema = z.object({ namespacedId: z.string().regex(/^[a-z0-9_.-]+:[a-z0-9/._-]+$/), numericId: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(), numericIdScope: z.enum(['server-registry-generation', 'server-block-state-generation']).optional(), kind: z.string(), blockStateProperties: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional() });
 const pageInteger = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const registryPageSchema = responseBase.extend({ kind: z.string(), completeness: z.enum(['complete', 'partial']), offset: pageInteger, limit: z.number().int().positive().max(1000), total: pageInteger, entries: z.array(rowSchema) });
 const recipePageSchema = responseBase.extend({ completeness: z.enum(['complete', 'partial']), offset: pageInteger, limit: z.number().int().positive().max(200), total: pageInteger, recipes: z.array(z.record(z.string(), z.unknown())) });
 const energyNetworkSchema = z.object({ available: z.boolean(), cables: z.array(z.object({ x: z.number().int(), y: z.number().int(), z: z.number().int() })), energyEndpoints: z.array(z.object({ x: z.number().int(), y: z.number().int(), z: z.number().int(), face: z.string(), block: z.string(), stored: z.number().int().nonnegative(), capacity: z.number().int().nonnegative(), canReceive: z.boolean(), canExtract: z.boolean() })), transferMeasurement: z.enum(['observed_this_tick', 'not_measured_this_tick']), transferredThisTick: z.number().int().nonnegative(), transferLimitPerTick: z.number().int().nonnegative() });
-const machineSchema = responseBase.extend({ dimension: z.string(), x: z.number().int(), y: z.number().int(), z: z.number().int(), block: z.string(), blockStateId: z.number().int().nonnegative(), blockStateProperties: z.record(z.string(), z.string()), blockEntityType: z.string().nullish().transform(value => value ?? null), blockEntityPresent: z.boolean(), inventory: z.unknown().optional(), itemCapabilities: z.array(z.unknown()).optional(), energyCapabilities: z.array(z.unknown()).optional(), energyNetwork: energyNetworkSchema.optional(), processiaMachine: z.record(z.string(), z.unknown()).optional() });
+const machineSchema = responseBase.extend({ dimension: z.string(), x: z.number().int(), y: z.number().int(), z: z.number().int(), block: z.string(), blockStateId: z.number().int().nonnegative(), blockStateProperties: z.record(z.string(), z.string()), blockEntityType: z.string().nullish().transform(value => value ?? null), blockEntityClass: z.string().nullish().transform(value => value ?? null), blockEntityPresent: z.boolean(), inventory: z.unknown().optional(), itemCapabilities: z.array(z.unknown()).optional(), energyCapabilities: z.array(z.unknown()).optional(), fluidCapabilities: z.array(z.unknown()).optional(), blockStateIdScope: z.string().optional(), energyNetwork: energyNetworkSchema.optional(), processiaMachine: z.record(z.string(), z.unknown()).optional() });
 const machineSearchSchema = responseBase.extend({ dimension: z.string(), centerX: z.number().int(), centerY: z.number().int(), centerZ: z.number().int(), radius: z.number().int().min(1).max(16), coverage: z.enum(['complete', 'partial']), unloadedChunkCount: z.number().int().nonnegative(), total: pageInteger, offset: pageInteger, limit: z.number().int().positive().max(100), machines: z.array(z.record(z.string(), z.unknown())) });
+const registryKindsSchema = responseBase.extend({ completeness: z.literal('complete'), registries: z.array(z.string().min(1).max(256)).max(10_000) });
+const capabilitiesSchema = responseBase.extend({ status: z.literal('available'), registries: z.boolean(), blockStateProperties: z.boolean(), genericBlockEntityType: z.boolean(), itemHandler: z.boolean(), energyStorage: z.boolean(), fluidHandler: z.boolean(), loadedChunkOnly: z.boolean(), readOnly: z.boolean(), processiaAdapter: z.boolean() });
 
 class BridgeHttpError extends Error {
   constructor(readonly status: number, readonly code: string) { super(`bridge-${code}`); }
@@ -28,6 +31,8 @@ class BridgeHttpError extends Error {
 
 export interface BridgeClientConfig {
   enabled: boolean;
+  mode?: 'processia' | 'generic';
+  headerPrefix?: 'X-Processia' | 'X-Minecraft-MCP';
   url: string | null;
   secret: string | null;
   expectedServerIdentity: string | null;
@@ -38,24 +43,44 @@ export interface BridgeClientConfig {
 }
 
 export function readBridgeClientConfig(env: Record<string, string | undefined> = process.env): BridgeClientConfig {
-  const enabled = env.PROCESSIA_BRIDGE_ENABLED === 'true';
-  if (!enabled) return { enabled: false, url: null, secret: null, expectedServerIdentity: null, expectedMinecraftEndpoint: null, expectedNeoForgeVersion: null, timeoutMs: 3000, configurationError: null };
-  const urlValue = env.PROCESSIA_BRIDGE_URL ?? 'http://127.0.0.1:25576';
+  const generic = env.MINECRAFT_MCP_BRIDGE_ENABLED === 'true';
+  const mode = generic ? 'generic' : 'processia';
+  const headerPrefix = generic ? 'X-Minecraft-MCP' : 'X-Processia';
+  const enabled = generic || env.PROCESSIA_BRIDGE_ENABLED === 'true';
+  if (!enabled) return { enabled: false, mode, headerPrefix, url: null, secret: null, expectedServerIdentity: null, expectedMinecraftEndpoint: null, expectedNeoForgeVersion: null, timeoutMs: 3000, configurationError: null };
+  const urlValue = (generic ? env.MINECRAFT_MCP_BRIDGE_URL : env.PROCESSIA_BRIDGE_URL) ?? (generic ? 'http://127.0.0.1:25577' : 'http://127.0.0.1:25576');
   let url: URL | null = null;
   try { url = new URL(urlValue); } catch { /* Report below without echoing credentials or URL. */ }
   const loopback = url !== null && url.protocol === 'http:' && (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]') && !url.username && !url.password;
-  const secret = env.PROCESSIA_BRIDGE_SECRET ?? '';
-  const expectedServerIdentity = env.PROCESSIA_BRIDGE_SERVER_IDENTITY ?? '';
-  const expectedMinecraftEndpoint = env.PROCESSIA_MINECRAFT_ENDPOINT ?? '';
-  const expectedNeoForgeVersion = env.PROCESSIA_BRIDGE_NEOFORGE_VERSION ?? '';
-  const timeoutMs = Number(env.PROCESSIA_BRIDGE_TIMEOUT_MS ?? 3000);
+  let credential: { secret?: string; serverIdentity?: string; minecraftEndpoint?: string; neoForgeVersion?: string } = {};
+  let credentialError: string | null = null;
+  if (generic) {
+    const credentialFile = env.MINECRAFT_MCP_BRIDGE_CREDENTIAL_FILE ?? '';
+    if (credentialFile) {
+      try {
+        const stat = lstatSync(credentialFile);
+        if (!stat.isFile() || stat.isSymbolicLink() || (process.platform !== 'win32' && (stat.mode & 0o777) !== 0o600)) throw new Error('credential-file-permissions-invalid');
+        const parsed: unknown = JSON.parse(readFileSync(credentialFile, 'utf8'));
+        const schema = z.object({ format: z.literal('minecraft-mcp-bridge-credential-v1'), secret: z.string().min(32).max(512), serverIdentity: z.string().min(1), minecraftEndpoint: z.string().min(1), neoForgeVersion: z.string().min(1) }).safeParse(parsed);
+        if (!schema.success) throw new Error('credential-file-invalid');
+        credential = schema.data;
+      } catch (error) { credentialError = error instanceof Error && error.message === 'credential-file-permissions-invalid' ? error.message : 'credential-file-unavailable-or-invalid'; }
+    } else if (!env.MINECRAFT_MCP_BRIDGE_SECRET) credentialError = 'bridge-credential-file-required';
+  }
+  const secret = generic ? (env.MINECRAFT_MCP_BRIDGE_SECRET ?? credential.secret ?? '') : (env.PROCESSIA_BRIDGE_SECRET ?? '');
+  const expectedServerIdentity = (generic ? env.MINECRAFT_MCP_BRIDGE_SERVER_IDENTITY : env.PROCESSIA_BRIDGE_SERVER_IDENTITY) ?? credential.serverIdentity ?? '';
+  const expectedMinecraftEndpoint = (generic ? env.MINECRAFT_MCP_SERVER_ENDPOINT : env.PROCESSIA_MINECRAFT_ENDPOINT) ?? credential.minecraftEndpoint ?? '';
+  const expectedNeoForgeVersion = (generic ? env.MINECRAFT_MCP_BRIDGE_NEOFORGE_VERSION : env.PROCESSIA_BRIDGE_NEOFORGE_VERSION) ?? credential.neoForgeVersion ?? '';
+  const timeoutMs = Number((generic ? env.MINECRAFT_MCP_BRIDGE_TIMEOUT_MS : env.PROCESSIA_BRIDGE_TIMEOUT_MS) ?? 3000);
   const configurationError = !loopback ? 'bridge-url-must-be-loopback-http'
+    : credentialError
+      ? credentialError
     : secret.length < 32 ? 'bridge-secret-must-have-at-least-32-characters'
       : !expectedServerIdentity || !expectedMinecraftEndpoint || !expectedNeoForgeVersion ? 'expected-identity-endpoint-and-neoforge-version-required'
         : !/^[A-Za-z0-9._-]{1,128}$/.test(expectedServerIdentity) ? 'bridge-server-identity-invalid'
         : !Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 15000 ? 'bridge-timeout-out-of-range'
           : null;
-  return { enabled, url: loopback ? url!.toString().replace(/\/$/, '') : null, secret: secret || null,
+  return { enabled, mode, headerPrefix, url: loopback ? url!.toString().replace(/\/$/, '') : null, secret: secret || null,
     expectedServerIdentity: expectedServerIdentity || null, expectedMinecraftEndpoint: expectedMinecraftEndpoint || null,
     expectedNeoForgeVersion: expectedNeoForgeVersion || null, timeoutMs, configurationError };
 }
@@ -100,10 +125,33 @@ export class NeoForgeBridgeClient {
     return page;
   }
 
+  async registryKinds(): Promise<string[]> {
+    if ((this.config.mode ?? 'processia') !== 'generic') throw new Error('dynamic-registry-index-requires-generic-bridge');
+    const result = registryKindsSchema.parse(await this.fetchJson('/v1/registry-kinds'));
+    this.validateSessionMetadata(result);
+    const kinds = [...result.registries];
+    if (new Set(kinds).size !== kinds.length) throw new Error('bridge-registry-index-contains-duplicates');
+    if (kinds.some((kind) => !/^(?:[a-zA-Z][A-Za-z0-9]*|registry:[a-z0-9_.-]+:[a-z0-9/._-]+)$/.test(kind))) throw new Error('bridge-registry-index-kind-invalid');
+    return kinds.sort();
+  }
+
+  async capabilities(): Promise<BridgeCapabilities> {
+    if ((this.config.mode ?? 'processia') !== 'generic') throw new Error('generic-capabilities-require-generic-bridge');
+    const result = capabilitiesSchema.parse(await this.fetchJson('/v1/capabilities'));
+    this.validateSessionMetadata(result);
+    if (!result.readOnly || !result.loadedChunkOnly) throw new Error('bridge-capability-security-contract-mismatch');
+    return result;
+  }
+
   async inspectMachine(request: BridgeMachineInspectionRequest): Promise<BridgeMachineInspection> {
-    const result = machineSchema.parse(await this.fetchJson('/v1/inspect-machine', { method: 'POST', body: JSON.stringify(request) }));
+    const path = (this.config.mode ?? 'processia') === 'generic' ? '/v1/inspect-block' : '/v1/inspect-machine';
+    const result = machineSchema.parse(await this.fetchJson(path, { method: 'POST', body: JSON.stringify(request) }));
     this.validateSessionMetadata(result);
     return result;
+  }
+
+  async inspectBlock(request: BridgeMachineInspectionRequest): Promise<BridgeMachineInspection> {
+    return this.inspectMachine(request);
   }
 
   async listMachines(request: BridgeMachineSearchRequest): Promise<BridgeMachineSearchPage> {
@@ -141,9 +189,10 @@ export class NeoForgeBridgeClient {
     if (authenticated && !this.session) throw new Error('bridge-handshake-required');
     const requestId = randomUUID();
     const headers: Record<string, string> = { Accept: 'application/json', Authorization: `Bearer ${this.config.secret}` };
-    headers['X-Processia-Request-Id'] = requestId;
+    const headerPrefix = this.config.headerPrefix ?? 'X-Processia';
+    headers[`${headerPrefix}-Request-Id`] = requestId;
     if (options.body !== undefined) headers['Content-Type'] = 'application/json';
-    if (authenticated && this.session) headers['X-Processia-Session'] = this.session.sessionId;
+    if (authenticated && this.session) headers[`${headerPrefix}-Session`] = this.session.sessionId;
     let response: Response;
     try {
       response = await fetch(`${this.config.url}${path}`, { method: options.method ?? 'GET', headers, ...(options.body === undefined ? {} : { body: options.body }), signal: AbortSignal.timeout(this.config.timeoutMs), redirect: 'error' });
@@ -162,7 +211,7 @@ export class NeoForgeBridgeClient {
     }
     let parsed: unknown;
     try { parsed = JSON.parse(text) as unknown; } catch { throw new Error('bridge-invalid-json'); }
-    const responseRequestId = response.headers.get('X-Processia-Request-Id');
+    const responseRequestId = response.headers.get(`${this.config.headerPrefix ?? 'X-Processia'}-Request-Id`);
     if (responseRequestId !== requestId) {
       this.clearSession();
       throw new Error(`bridge-response-header-request-id-mismatch:${path}:${requestId}:${responseRequestId ?? 'missing'}`);
@@ -213,7 +262,9 @@ export class NeoForgeBridgeIntegration {
     const entries: RegistryEntry[] = [];
     const coverage: Partial<Record<RegistryKind, 'complete' | 'partial'>> = {};
     const registryCounts: Array<{ kind: RegistryKind; completeness: 'complete' | 'partial'; entries: number }> = [];
-    for (const kind of registryKinds) {
+    const kinds = (this.client.config.mode ?? 'processia') === 'generic' ? await this.guarded(this.client.registryKinds(), session.sessionId) : registryKinds;
+    this.assertCurrentContext(context, session.sessionId);
+    for (const kind of kinds) {
       let offset = 0; let expectedTotal: number | null = null; let completeness: 'complete' | 'partial' = 'partial';
       let registryEntryCount = 0;
       do {
@@ -226,7 +277,9 @@ export class NeoForgeBridgeIntegration {
         for (const row of page.entries) {
           if (row.kind !== kind) throw new Error('bridge-registry-kind-mismatch');
           entries.push({ kind, minecraftVersion: context.minecraftVersion, namespacedId: row.namespacedId,
-            ...(row.numericId === undefined ? {} : { numericId: row.numericId }), ...(row.blockStateProperties === undefined ? {} : { blockStateProperties: row.blockStateProperties }),
+            ...(row.numericId === undefined ? {} : { numericId: row.numericId }),
+            ...(row.numericId === undefined ? {} : { numericIdScope: row.numericIdScope ?? (kind === 'blockState' ? 'server-block-state-generation' : 'server-registry-generation') }),
+            ...(row.blockStateProperties === undefined ? {} : { blockStateProperties: row.blockStateProperties }),
             registryEpoch: context.registryEpoch, provenance: { source: 'neoforge-bridge', minecraftVersion: context.minecraftVersion,
             registryEpoch: context.registryEpoch, sourceRegistryEpoch: session.registryEpoch, serverIdentity: session.serverIdentity,
               neoForgeVersion: session.neoForgeVersion, observedAt: page.observedAt, providerVersion: session.neoForgeVersion } });
@@ -244,7 +297,7 @@ export class NeoForgeBridgeIntegration {
     this.assertCurrentContext(context, session.sessionId);
     const snapshot: RegistrySourceSnapshot = { source: 'neoforge-bridge', minecraftVersion: context.minecraftVersion, registryEpoch: context.registryEpoch,
       sourceRegistryEpoch: session.registryEpoch, serverIdentity: session.serverIdentity, neoForgeVersion: session.neoForgeVersion,
-      availableRegistries: registryKinds, registryCoverage: coverage, entries };
+      availableRegistries: kinds, registryCoverage: coverage, entries };
     this.runtime.bindAuthenticatedBridge({ authenticated: true, serverIdentity: session.serverIdentity, minecraftEndpoint: session.minecraftEndpoint,
       minecraftVersion: session.minecraftVersion, neoForgeVersion: session.neoForgeVersion, sourceRegistryEpoch: session.registryEpoch,
       sessionId: session.sessionId, connectedAt: new Date().toISOString() });
@@ -263,6 +316,25 @@ export class NeoForgeBridgeIntegration {
     if (result.serverIdentity !== session.serverIdentity || result.registryEpoch !== session.registryEpoch) throw new Error('bridge-machine-response-generation-mismatch');
     if (result.dimension !== request.dimension || result.x !== request.x || result.y !== request.y || result.z !== request.z) throw new Error('bridge-machine-response-location-mismatch');
     this.lastError = null;
+    return result;
+  }
+
+  async inspectBlock(request: BridgeMachineInspectionRequest): Promise<BridgeMachineInspection> {
+    const session = await this.ensureCurrentSession();
+    const context = this.runtime.getContext();
+    const result = await this.guarded(this.client.inspectBlock(request), session.sessionId);
+    this.assertCurrentContext(context, session.sessionId);
+    if (result.serverIdentity !== session.serverIdentity || result.registryEpoch !== session.registryEpoch) throw new Error('bridge-block-response-generation-mismatch');
+    if (result.dimension !== request.dimension || result.x !== request.x || result.y !== request.y || result.z !== request.z) throw new Error('bridge-block-response-location-mismatch');
+    this.lastError = null;
+    return result;
+  }
+
+  async capabilities(): Promise<BridgeCapabilities> {
+    const session = await this.ensureCurrentSession();
+    const context = this.runtime.getContext();
+    const result = await this.guarded(this.client.capabilities(), session.sessionId);
+    this.assertCurrentContext(context, session.sessionId);
     return result;
   }
 

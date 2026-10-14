@@ -15,7 +15,7 @@
 ___
 
 > [!IMPORTANT]
-> Processia fork validation target: Minecraft Java 1.21.1 with NeoForge 21.1.259. The active server version is negotiated at runtime; registry resolution uses the matching installed `minecraft-data` version. See [the registry integration notes](docs/processia-registry-p1.md) for modded-registry limitations.
+> This fork supports the vanilla Mineflayer path without mods and adds an optional, standalone NeoForge diagnostic bridge. The active Minecraft version is negotiated at runtime. Modded registries and capabilities are only reported when an authenticated bridge supplies them; Processia-specific machine details remain optional. See [the universalization report](docs/UNIVERSALIZATION_REPORT.md) and [the generic bridge guide](docs/universal-neoforge-bridge.md).
 
 https://github.com/user-attachments/assets/6f17f329-3991-4bc7-badd-7cde9aacb92f
 
@@ -31,6 +31,14 @@ A Minecraft bot powered by large language models and [Mineflayer API](https://gi
 - Node.js (>= 20.10.0)
 - A running Minecraft game (the setup below was tested with Minecraft 1.21.8 Java Edition included in Microsoft Game Pass)
 - An MCP-compatible client. Claude Desktop will be used as an example, but other MCP clients are also supported
+
+## Vanilla and NeoForge support
+
+The existing Mineflayer tools work without NeoForge or Processia. An optional companion mod in the sibling repository path `../Processia/neoforge-bridge` exposes bounded registry and block/capability reads on loopback for NeoForge servers. It is a separate mod and does not reference Processia classes. The current Processia mod bridge remains a legacy optional adapter.
+
+The generic bridge is disabled by default. Enabling it requires `MINECRAFT_MCP_BRIDGE_ENABLED=true` and `MINECRAFT_MCP_ENVIRONMENT=development` in the game server environment. It writes an ephemeral owner-only credential file in the server `config` directory. Configure the MCP process with `MINECRAFT_MCP_BRIDGE_ENABLED=true` and `MINECRAFT_MCP_BRIDGE_CREDENTIAL_FILE` pointing to that file. The default bridge listener is `127.0.0.1:25577`; it must differ from the Minecraft port. Never copy the credential into logs or source control.
+
+The bridge reports registry-local numeric IDs scoped to a server registry generation. They are not stable between server restarts or registry reloads. Arbitrary mod-private BlockEntity fields and custom capability APIs are not reflected. Capability inspection only reads standard NeoForge ItemHandler, EnergyStorage and FluidHandler interfaces and refuses unloaded chunks. See the [security and endpoint contract](docs/universal-neoforge-bridge.md).
 
 ## Getting started
 

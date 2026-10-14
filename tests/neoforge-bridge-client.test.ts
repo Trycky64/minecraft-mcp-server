@@ -1,5 +1,8 @@
 import test from 'ava';
 import sinon from 'sinon';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { NeoForgeBridgeClient, NeoForgeBridgeIntegration, readBridgeClientConfig } from '../src/bridge/neoforge-bridge-client.js';
 import { RuntimeRegistryService } from '../src/services/runtime-registry-service.js';
 import type mineflayer from 'mineflayer';
@@ -18,9 +21,83 @@ function base() { return { schemaVersion: 1, minecraftVersion: '1.21.1', neoForg
 function handshake() { return { ...base(), sessionId: '267318c8-a93c-48e9-8d92-6d30d78528b8' }; }
 function bridgeReply(init: RequestInit | undefined, body: Record<string, unknown>, status = 200): Response {
   const headers = new Headers(init?.headers);
-  const requestId = headers.get('X-Processia-Request-Id') ?? '';
-  return new Response(JSON.stringify({ ...body, requestId }), { status, headers: { 'X-Processia-Request-Id': requestId } });
+  const responseHeader = headers.has('X-Minecraft-MCP-Request-Id') ? 'X-Minecraft-MCP-Request-Id' : 'X-Processia-Request-Id';
+  const requestId = headers.get(responseHeader) ?? '';
+  return new Response(JSON.stringify({ ...body, requestId }), { status, headers: { [responseHeader]: requestId } });
 }
+
+test('generic bridge mode loads owner-only ephemeral credentials and uses generic protocol headers', async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'minecraft-mcp-bridge-test-'));
+  const credentialFile = join(directory, 'bridge.credentials.json');
+  const generatedSecret = 'generated-ephemeral-test-secret-with-at-least-32-characters';
+  writeFileSync(credentialFile, JSON.stringify({ format: 'minecraft-mcp-bridge-credential-v1', secret: generatedSecret,
+    serverIdentity, minecraftEndpoint: '127.0.0.1:25565', neoForgeVersion: '21.1.259' }));
+  chmodSync(credentialFile, 0o600);
+  t.teardown(() => rmSync(directory, { recursive: true, force: true }));
+  t.false(readFileSync(credentialFile, 'utf8').includes('should-not-be-logged'));
+  const cfg = readBridgeClientConfig({ MINECRAFT_MCP_BRIDGE_ENABLED: 'true', MINECRAFT_MCP_BRIDGE_CREDENTIAL_FILE: credentialFile });
+  t.is(cfg.mode, 'generic');
+  t.is(cfg.headerPrefix, 'X-Minecraft-MCP');
+  t.is(cfg.secret, generatedSecret);
+  t.is(cfg.configurationError, null);
+
+  const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (_input, init) => bridgeReply(init, handshake()));
+  t.teardown(() => fetch.restore());
+  const client = new NeoForgeBridgeClient(cfg);
+  await client.handshake('1.21.1', '127.0.0.1:25565');
+  const headers = new Headers(fetch.firstCall.args[1]?.headers);
+  t.truthy(headers.get('X-Minecraft-MCP-Request-Id'));
+  t.is(headers.get('X-Processia-Request-Id'), null);
+  const { runtime } = mockRuntime();
+  const integration = new NeoForgeBridgeIntegration(runtime, cfg);
+  t.false(JSON.stringify(integration.status()).includes(generatedSecret));
+});
+
+test.serial('generic registry index accepts additional registry types with stable pagination semantics', async (t) => {
+  const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/handshake')) return bridgeReply(init, handshake());
+    return bridgeReply(init, { ...base(), completeness: 'complete', registries: ['blockState', 'item', 'registry:example:custom'] });
+  });
+  t.teardown(() => fetch.restore());
+  const genericConfig = readBridgeClientConfig({ MINECRAFT_MCP_BRIDGE_ENABLED: 'true', MINECRAFT_MCP_BRIDGE_SECRET: secret,
+    MINECRAFT_MCP_BRIDGE_SERVER_IDENTITY: serverIdentity, MINECRAFT_MCP_SERVER_ENDPOINT: '127.0.0.1:25565',
+    MINECRAFT_MCP_BRIDGE_NEOFORGE_VERSION: '21.1.259' });
+  const client = new NeoForgeBridgeClient(genericConfig);
+  await client.handshake('1.21.1', '127.0.0.1:25565');
+  t.deepEqual(await client.registryKinds(), ['blockState', 'item', 'registry:example:custom']);
+});
+
+test.serial('generic registry refresh preserves per-session numeric-ID scope and mod namespaces', async (t) => {
+  const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/handshake')) return bridgeReply(init, handshake());
+    if (url.pathname.endsWith('/registry-kinds')) return bridgeReply(init, { ...base(), completeness: 'complete', registries: ['item', 'registry:thirdparty:tools'] });
+    const kind = url.searchParams.get('kind')!;
+    const entries = kind === 'item'
+      ? [{ namespacedId: 'thirdparty:steel_ingot', numericId: 1200, numericIdScope: 'server-registry-generation', kind }]
+      : [{ namespacedId: 'thirdparty:hammer', numericId: 4, numericIdScope: 'server-registry-generation', kind }];
+    return bridgeReply(init, { ...base(), kind, completeness: 'complete', offset: 0, limit: 500, total: entries.length, entries });
+  });
+  t.teardown(() => fetch.restore());
+  const genericConfig = readBridgeClientConfig({ MINECRAFT_MCP_BRIDGE_ENABLED: 'true', MINECRAFT_MCP_BRIDGE_SECRET: secret,
+    MINECRAFT_MCP_BRIDGE_SERVER_IDENTITY: serverIdentity, MINECRAFT_MCP_SERVER_ENDPOINT: '127.0.0.1:25565',
+    MINECRAFT_MCP_BRIDGE_NEOFORGE_VERSION: '21.1.259' });
+  const { runtime } = mockRuntime();
+  const before = runtime.getContext();
+  const integration = new NeoForgeBridgeIntegration(runtime, genericConfig);
+  await integration.refreshRegistries();
+  t.true(fetch.getCalls().some((call) => new URL(String(call.args[0])).searchParams.get('limit') === '500'));
+  const result = runtime.getContext().registryService!.resolve({ kind: 'item', minecraftVersion: '1.21.1',
+    registryEpoch: before.registryEpoch!, namespacedId: 'thirdparty:steel_ingot' });
+  t.is(result.status, 'resolved');
+  if (result.status === 'resolved') {
+    t.is(result.provenance.source, 'neoforge-bridge');
+    t.is(result.entry.numericId, 1200);
+    t.is(result.entry.numericIdScope, 'server-registry-generation');
+    t.is(result.provenance.registryEpoch, before.registryEpoch);
+  }
+});
 function mockRuntime() {
   let bot = { version: '1.21.1', protocolVersion: '1.21.1' } as mineflayer.Bot;
   const runtime = new RuntimeRegistryService({ getBot: () => bot, isConnected: () => true, getConfig: () => ({ host: '127.0.0.1', port: 25565 }) });
@@ -144,7 +221,7 @@ test.serial('every data response validates endpoint identity and numeric ID coll
 test.serial('registry pagination rejects a snapshot beyond the bounded memory limit', async (t) => {
   const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (input, init) => {
     if (new URL(String(input)).pathname.endsWith('/handshake')) return bridgeReply(init, handshake());
-    return bridgeReply(init, { ...base(), kind: 'item', completeness: 'complete', offset: 0, limit: 500, total: 50_001, entries: [] });
+    return bridgeReply(init, { ...base(), kind: 'item', completeness: 'complete', offset: 0, limit: 500, total: 100_001, entries: [] });
   });
   t.teardown(() => fetch.restore());
   const { runtime } = mockRuntime(); const integration = new NeoForgeBridgeIntegration(runtime, config());

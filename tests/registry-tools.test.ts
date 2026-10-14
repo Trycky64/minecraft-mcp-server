@@ -21,11 +21,37 @@ function register(mockBot: mineflayer.Bot | null, connected: boolean) {
   return { mockServer, check, runtime };
 }
 
-test('registry diagnostic tools register exactly status, resolve and inspect', (t) => {
+test('registry diagnostic tools register the generic discovery surface plus backward-compatible registry names', (t) => {
   const { mockServer } = register(null, false);
   t.deepEqual((mockServer.tool as sinon.SinonStub).getCalls().map((call) => call.args[0]), [
+    'minecraft-get-server-info', 'minecraft-get-capabilities', 'minecraft-list-namespaces', 'minecraft-search-registry',
     'registry-status', 'registry-resolve', 'registry-inspect',
   ]);
+});
+
+test('generic server info and capability discovery work disconnected without reconnecting', async (t) => {
+  const { mockServer, check } = register(null, false);
+  const calls = (mockServer.tool as sinon.SinonStub).getCalls();
+  const info = JSON.parse((await calls.find((item) => item.args[0] === 'minecraft-get-server-info')!.args[3]({})).content[0].text);
+  const report = JSON.parse((await calls.find((item) => item.args[0] === 'minecraft-get-capabilities')!.args[3]({})).content[0].text);
+  t.is(info.status, 'disconnected');
+  t.is(info.bridge, null);
+  t.false(report.capabilities.find((c: { id: string }) => c.id === 'world.block.read.loaded').available);
+  t.false(report.capabilities.find((c: { id: string }) => c.id === 'neoforge.bridge.authenticated').available);
+  t.false(check.called);
+});
+
+test('namespace listing is data-driven and search returns bounded vanilla registry pages', async (t) => {
+  const bot = { version: '1.21.1', protocolVersion: 767 } as mineflayer.Bot;
+  const { mockServer } = register(bot, true);
+  const calls = (mockServer.tool as sinon.SinonStub).getCalls();
+  const namespaces = JSON.parse((await calls.find((item) => item.args[0] === 'minecraft-list-namespaces')!.args[3]({})).content[0].text);
+  t.true(namespaces.namespaces.some((row: { namespace: string }) => row.namespace === 'minecraft'));
+  const search = JSON.parse((await calls.find((item) => item.args[0] === 'minecraft-search-registry')!.args[3]({ kind: 'item', prefix: 'minecraft:diamond', offset: 0, limit: 5 })).content[0].text);
+  t.is(search.status, 'available');
+  t.true(search.returned <= 5);
+  t.true(search.entries.some((entry: { namespacedId: string }) => entry.namespacedId === 'minecraft:diamond'));
+  t.true(search.entries.every((entry: { provenance: { source: string } }) => entry.provenance.source === 'minecraft-data'));
 });
 
 test('registry-status works while disconnected and does not trigger reconnect', async (t) => {

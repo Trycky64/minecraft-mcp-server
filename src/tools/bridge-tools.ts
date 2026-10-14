@@ -11,6 +11,35 @@ function failure(factory: ToolFactory, error: unknown) {
 export function registerBridgeTools(factory: ToolFactory, bridge: NeoForgeBridgeIntegration): void {
   factory.registerTool('bridge-status', 'Show local NeoForge bridge configuration and authenticated session status', {}, async () => json(factory, bridge.status()), { requiresConnection: false });
 
+  factory.registerTool('minecraft-inspect-block-entity', 'Read a generic block state, block entity type, item, energy and fluid capabilities at a loaded position using the authenticated NeoForge bridge', {
+    dimension: z.string().regex(/^[a-z0-9_.-]+:[a-z0-9/._-]+$/),
+    x: z.number().int().min(-30_000_000).max(30_000_000),
+    y: z.number().int(),
+    z: z.number().int().min(-30_000_000).max(30_000_000),
+  }, async (request) => {
+    try {
+      const result = await bridge.inspectBlock(request);
+      return json(factory, { ...result, readOnly: true,
+        limitation: 'Only generic public block state, BlockEntity identity, Inventory/ItemHandler, EnergyStorage and FluidHandler data are exposed. Arbitrary mod-private fields are not reflected or serialized.' });
+    } catch (error) { return failure(factory, error); }
+  });
+
+  factory.registerTool('minecraft-inspect-capabilities', 'Read-only generic NeoForge ItemHandler, EnergyStorage and FluidHandler presence and state for each face at a loaded block position', {
+    dimension: z.string().regex(/^[a-z0-9_.-]+:[a-z0-9/._-]+$/),
+    x: z.number().int().min(-30_000_000).max(30_000_000),
+    y: z.number().int(),
+    z: z.number().int().min(-30_000_000).max(30_000_000),
+  }, async (request) => {
+    try {
+      const result = await bridge.inspectBlock(request);
+      return json(factory, { status: 'available', readOnly: true, serverIdentity: result.serverIdentity,
+        registryEpoch: result.registryEpoch, dimension: result.dimension, x: result.x, y: result.y, z: result.z,
+        itemCapabilities: result.itemCapabilities ?? null, energyCapabilities: result.energyCapabilities ?? null,
+        fluidCapabilities: result.fluidCapabilities ?? null,
+        caveat: 'Capabilities are queried without insert, extract, fill, drain or simulation calls.' });
+    } catch (error) { return failure(factory, error); }
+  });
+
   factory.registerTool('bridge-refresh-registries', 'Refresh authoritative NeoForge registry snapshots for the active Minecraft session', {}, async () => {
     try { return json(factory, await bridge.refreshRegistries()); } catch (error) { return failure(factory, error); }
   });

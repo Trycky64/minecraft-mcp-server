@@ -22,6 +22,7 @@ export interface BridgeHandshakeResponse {
 export interface BridgeRegistryRow {
   namespacedId: string;
   numericId?: number;
+  numericIdScope?: 'server-registry-generation' | 'server-block-state-generation';
   kind: RegistryKind;
   blockStateProperties?: Record<string, string | number | boolean>;
 }
@@ -55,8 +56,23 @@ export interface BridgeMachineInspection extends Omit<BridgeHandshakeResponse, '
   inventory?: unknown;
   itemCapabilities?: unknown[];
   energyCapabilities?: unknown[];
+  fluidCapabilities?: unknown[];
+  blockEntityClass?: string | null;
   energyNetwork?: BridgeEnergyNetworkInspection;
   processiaMachine?: Record<string, unknown>;
+}
+
+export interface BridgeCapabilities extends Omit<BridgeHandshakeResponse, 'sessionId'> {
+  status: 'available';
+  registries: boolean;
+  blockStateProperties: boolean;
+  genericBlockEntityType: boolean;
+  itemHandler: boolean;
+  energyStorage: boolean;
+  fluidHandler: boolean;
+  loadedChunkOnly: boolean;
+  readOnly: boolean;
+  processiaAdapter: boolean;
 }
 
 export interface BridgeEnergyNetworkInspection {

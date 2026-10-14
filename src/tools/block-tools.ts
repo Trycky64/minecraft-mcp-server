@@ -73,6 +73,7 @@ export function registerBlockTools(
       if (blockAtPos && blockAtPos.name !== 'air') {
         return factory.createResponse(`There's already a block (${blockAtPos.name}) at (${x}, ${y}, ${z})`);
       }
+      const stateBeforePlacement = blockAtPos.stateId;
 
       const possibleFaces: FaceOption[] = [
         { direction: 'down', vector: new Vec3(0, -1, 0) },
@@ -117,9 +118,19 @@ export function registerBlockTools(
             log('warn', `Failed to place using ${face.direction} face: ${placeError}`);
             continue;
           }
+          const observed = bot.blockAt(placePos);
+          const stateChanged = stateBeforePlacement !== undefined && observed?.stateId !== undefined && observed.stateId !== stateBeforePlacement;
+          const namedBlockObserved = observed !== null && observed !== undefined && observed.name !== 'air' && observed.name !== 'unknown';
+          const confirmed = observed !== null && observed !== undefined && (stateChanged || namedBlockObserved);
           if (itemToPlace && previousHeldItem && previousHeldItem !== itemToPlace) {
             try { await bot.equip(previousHeldItem, 'hand'); }
             catch (restoreError) { log('warn', `Placed block but could not restore previous held item: ${restoreError}`); }
+          }
+          if (!confirmed) {
+            return factory.createErrorResponse(`Mineflayer accepted the placement request at (${x}, ${y}, ${z}), but the resulting block state was not confirmed in the loaded-world cache`);
+          }
+          if (observed.name === 'unknown') {
+            return factory.createResponse(`Placement confirmed at (${x}, ${y}, ${z}) by changed raw block state ID ${observed.stateId}; Mineflayer cannot resolve the resulting modded block name`);
           }
           return factory.createResponse(`Placed block at (${x}, ${y}, ${z}) using ${face.direction} face`);
         }

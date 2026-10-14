@@ -2,6 +2,7 @@ import minecraftData from 'minecraft-data';
 
 export type RegistryKind = 'item' | 'block' | 'blockState' | 'entity' | 'menu' | (string & {});
 export type RegistrySourceName = 'minecraft-data' | 'protocol' | 'neoforge-bridge' | (string & {});
+export type RegistryNumericIdScope = 'minecraft-data-version' | 'server-registry-generation' | 'server-block-state-generation';
 
 export interface RegistryProvenance {
   source: RegistrySourceName;
@@ -21,6 +22,8 @@ export interface RegistryEntry {
   minecraftVersion: string;
   namespacedId: string;
   numericId?: number;
+  /** Explicit lifetime/meaning for numericId; numeric IDs must never be assumed stable across sessions. */
+  numericIdScope?: RegistryNumericIdScope;
   blockStateProperties?: Record<string, string | number | boolean>;
   registryEpoch?: string;
   provenance: RegistryProvenance;
@@ -183,17 +186,17 @@ export function createMinecraftDataSnapshot(minecraftVersion: string): RegistryS
   };
   const entries: RegistryEntry[] = [];
   for (const item of data.itemsArray) {
-    entries.push({ kind: 'item', minecraftVersion, namespacedId: `minecraft:${item.name}`, numericId: item.id, registryEpoch: provenance.registryEpoch, provenance });
+    entries.push({ kind: 'item', minecraftVersion, namespacedId: `minecraft:${item.name}`, numericId: item.id, numericIdScope: 'minecraft-data-version', registryEpoch: provenance.registryEpoch, provenance });
   }
   for (const block of data.blocksArray) {
-    entries.push({ kind: 'block', minecraftVersion, namespacedId: `minecraft:${block.name}`, numericId: block.id, registryEpoch: provenance.registryEpoch, provenance });
+    entries.push({ kind: 'block', minecraftVersion, namespacedId: `minecraft:${block.name}`, numericId: block.id, numericIdScope: 'minecraft-data-version', registryEpoch: provenance.registryEpoch, provenance });
     // minecraft-data explicitly defines these state-ID bounds for its static registry.
     for (let stateId = block.minStateId; stateId <= block.maxStateId; stateId += 1) {
-      entries.push({ kind: 'blockState', minecraftVersion, namespacedId: `minecraft:${block.name}`, numericId: stateId, registryEpoch: provenance.registryEpoch, provenance });
+      entries.push({ kind: 'blockState', minecraftVersion, namespacedId: `minecraft:${block.name}`, numericId: stateId, numericIdScope: 'minecraft-data-version', registryEpoch: provenance.registryEpoch, provenance });
     }
   }
   for (const entity of data.entitiesArray) {
-    entries.push({ kind: 'entity', minecraftVersion, namespacedId: `minecraft:${entity.name}`, numericId: entity.id, registryEpoch: provenance.registryEpoch, provenance });
+    entries.push({ kind: 'entity', minecraftVersion, namespacedId: `minecraft:${entity.name}`, numericId: entity.id, numericIdScope: 'minecraft-data-version', registryEpoch: provenance.registryEpoch, provenance });
   }
   return {
     source: 'minecraft-data',

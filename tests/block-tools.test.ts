@@ -319,9 +319,12 @@ test('place-block selects a modded stack only from an authoritative current-epoc
   const factory = new ToolFactory(mockServer, mockConnection);
   const stack = { type: 7001, name: 'unknown', count: 1, slot: 36 };
   const reference = { name: 'stone' };
+  let targetReads = 0;
   const mockBot = {
     version: '1.21.1', entity: { position: new Vec3(0, 64, 0) },
-    blockAt: sinon.stub().callsFake((pos: Vec3) => pos.x === 3 && pos.y === 64 && pos.z === 3 ? { name: 'air' } : reference),
+    blockAt: sinon.stub().callsFake((pos: Vec3) => pos.x === 3 && pos.y === 64 && pos.z === 3
+      ? (++targetReads > 1 ? { name: 'unknown', stateId: 9900 } : { name: 'air', stateId: 0 })
+      : reference),
     inventory: { items: sinon.stub().returns([stack]) }, heldItem: null,
     canSeeBlock: sinon.stub().returns(true), lookAt: sinon.stub().resolves(),
     equip: sinon.stub().resolves(), placeBlock: sinon.stub().resolves(),
@@ -337,8 +340,27 @@ test('place-block selects a modded stack only from an authoritative current-epoc
   registerBlockTools(factory, () => mockBot, () => runtime.getContext());
   const call = (mockServer.tool as sinon.SinonStub).getCalls().find((item) => item.args[0] === 'place-block')!;
   const result = await call.args[3]({ x: 3, y: 64, z: 3, itemId: 'processia:crusher' });
-  t.true(result.content[0].text.includes('Placed block'));
+  t.true(result.content[0].text.includes('Placement confirmed'));
+  t.true(result.content[0].text.includes('raw block state ID 9900'));
   t.true(mockBot.equip.calledWith(stack, 'hand'));
+  t.true(mockBot.placeBlock.calledOnce);
+});
+
+test('place-block does not report success until a changed non-air state is observed', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  const reference = { name: 'stone' };
+  const mockBot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    blockAt: sinon.stub().callsFake((pos: Vec3) => pos.x === 3 && pos.y === 64 && pos.z === 3 ? { name: 'air', stateId: 0 } : reference),
+    canSeeBlock: sinon.stub().returns(true), lookAt: sinon.stub().resolves(), placeBlock: sinon.stub().resolves(),
+  } as unknown as mineflayer.Bot;
+  registerBlockTools(factory, () => mockBot);
+  const call = (mockServer.tool as sinon.SinonStub).getCalls().find((item) => item.args[0] === 'place-block')!;
+  const result = await call.args[3]({ x: 3, y: 64, z: 3 });
+  t.true(result.isError);
+  t.true(result.content[0].text.includes('was not confirmed'));
   t.true(mockBot.placeBlock.calledOnce);
 });
 
