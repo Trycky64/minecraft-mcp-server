@@ -10,9 +10,6 @@ Maintained in this repository by **Trycky64**. Installation, releases, issues an
 <a href="https://github.com/Trycky64">
   <img alt="Contribution Welcome" src="https://img.shields.io/badge/Contribution-Welcome-blue">
 </a>
-<a href="https://github.com/Trycky64/minecraft-mcp-server/releases/latest">
-  <img alt="Latest Release" src="https://img.shields.io/github/v/release/Trycky64/minecraft-mcp-server?label=Latest%20Release">
-</a>
 
 <img width="2063" height="757" alt="image" src="https://github.com/user-attachments/assets/3f0f0438-f079-4226-90bd-87b9e1311d19" />
 
@@ -24,10 +21,6 @@ ___
 https://github.com/user-attachments/assets/6f17f329-3991-4bc7-badd-7cde9aacb92f
 
 A Minecraft bot powered by large language models and [Mineflayer API](https://github.com/PrismarineJS/mineflayer). This bot uses the [Model Context Protocol](https://github.com/modelcontextprotocol) (MCP) to enable Claude and other supported models to control a Minecraft character.
-
-<a href="https://glama.ai/mcp/servers/@yuniko-software/minecraft-mcp-server">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/@yuniko-software/minecraft-mcp-server/badge" alt="mcp-minecraft MCP server" />
-</a>
 
 ## Prerequisites
 
