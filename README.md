@@ -1,13 +1,17 @@
-# Minecraft MCP Server
+# Minecraft MCP Server — Trycky64 Edition
 
-<a href="https://github.com/yuniko-software/minecraft-mcp-server/actions">
-  <img alt="CI" src="https://github.com/yuniko-software/minecraft-mcp-server/actions/workflows/build.yml/badge.svg">
+Maintained in this repository by **Trycky64**. Installation, releases, issues and CI for this edition are hosted at [Trycky64/minecraft-mcp-server](https://github.com/Trycky64/minecraft-mcp-server).
+
+> **Credits:** This project is based on [yuniko-software/minecraft-mcp-server](https://github.com/yuniko-software/minecraft-mcp-server). Original authorship and existing copyright notices remain with the original contributors. See the [Apache-2.0 license](LICENSE).
+
+<a href="https://github.com/Trycky64/minecraft-mcp-server/actions">
+  <img alt="CI" src="https://github.com/Trycky64/minecraft-mcp-server/actions/workflows/build.yml/badge.svg">
 </a>
-<a href="https://github.com/yuniko-software">
+<a href="https://github.com/Trycky64">
   <img alt="Contribution Welcome" src="https://img.shields.io/badge/Contribution-Welcome-blue">
 </a>
-<a href="https://github.com/yuniko-software/minecraft-mcp-server/releases/latest">
-  <img alt="Latest Release" src="https://img.shields.io/github/v/release/yuniko-software/minecraft-mcp-server?label=Latest%20Release">
+<a href="https://github.com/Trycky64/minecraft-mcp-server/releases/latest">
+  <img alt="Latest Release" src="https://img.shields.io/github/v/release/Trycky64/minecraft-mcp-server?label=Latest%20Release">
 </a>
 
 <img width="2063" height="757" alt="image" src="https://github.com/user-attachments/assets/3f0f0438-f079-4226-90bd-87b9e1311d19" />
@@ -38,7 +42,7 @@ This bot is designed to be used with Claude Desktop through the Model Context Pr
 
 ### Run Minecraft
 
-Create a singleplayer world and open it to LAN (`ESC -> Open to LAN`). Bot will try to connect using port `25565` and hostname `localhost`. These parameters could be configured in `claude_desktop_config.json` on a next step. 
+Create a singleplayer world and open it to LAN (`ESC -> Open to LAN`). The bot connects to `localhost` on port `25565` by default, but **do not use a personal or production server for automation tests**. Prefer a dedicated local test server on port `25665` and set the `--port` argument accordingly. These parameters could be configured in `claude_desktop_config.json` on a next step. 
 
 ### MCP Configuration
 
@@ -51,11 +55,11 @@ Make sure that [Claude Desktop](https://claude.ai/download) is installed. Open `
       "command": "npx",
       "args": [
         "-y",
-        "github:yuniko-software/minecraft-mcp-server",
+        "github:Trycky64/minecraft-mcp-server",
         "--host",
         "localhost",
         "--port",
-        "25565",
+        "25665",
         "--username",
         "ClaudeBot"
       ]
@@ -64,7 +68,7 @@ Make sure that [Claude Desktop](https://claude.ai/download) is installed. Open `
 }
 ```
 
-Double-check that right `--port` and `--host` parameters were used. Make sure to completely reboot the Claude Desktop application (should be closed in OS tray). 
+The example uses an isolated local test server on port `25665`; replace it only with a server and port you explicitly control. Double-check `--port` and `--host`. Make sure to completely reboot the Claude Desktop application (should be closed in OS tray). 
 
 ## Running
 
