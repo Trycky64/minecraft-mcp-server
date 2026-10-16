@@ -1,4 +1,6 @@
-# Welcome to Minecraft-MCP-Server Contributing Guide
+# Contributing to Trycky64 Minecraft MCP Server
+
+This repository is maintained at [Trycky64/minecraft-mcp-server](https://github.com/Trycky64/minecraft-mcp-server) and derives from [yuniko-software/minecraft-mcp-server](https://github.com/yuniko-software/minecraft-mcp-server). Contributions to this edition should target Trycky64's `main` branch.
 
 ## Prerequisites
 - Git
@@ -24,9 +26,9 @@ git checkout -b your-feature-name
 
 ### 3. Setup Minecraft Server
 
-Create a singleplayer world and open it to LAN (ESC -> Open to LAN). The bot will connect using port 25565 and hostname localhost by default.
+Create a singleplayer world and open it to LAN (ESC -> Open to LAN). The upstream bot defaults to port 25565 on localhost. For development, use a dedicated local test server on port 25665 instead; do not run automation against personal or production worlds.
 
-For a more detailed setup guide, see the [README](README.md).
+For a more detailed setup guide and the Trycky64 installation reference, see the [README](README.md).
 
 ### 4. Configure Your MCP Client
 
@@ -66,7 +68,7 @@ Update your MCP configuration to use your fork and branch:
         "--host",
         "localhost",
         "--port",
-        "25565",
+        "25665",
         "--username",
         "ClaudeBot"
       ]
@@ -101,5 +103,5 @@ To use the MCP Inspector with your development branch, follow the guide at: http
 
 Once you're happy with your changes:
 1. Push your feature branch to your fork
-2. Create a Pull Request from your fork to the main repository
+2. Create a Pull Request from your fork to [Trycky64/minecraft-mcp-server](https://github.com/Trycky64/minecraft-mcp-server) targeting `main`
 3. Others can test your changes by pointing their config to your fork/branch
