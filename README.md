@@ -1,5 +1,17 @@
 # Minecraft MCP Server
 
+> **Mission 12 candidate (2026-10-16):** The local, unpublished MCP package is now `2.1.0-beta.1`; the standalone bridge remains `0.1.0`. Windows and Linux x64 builds, lint and 231 tests pass. The GUI remains experimental and the six moderate production npm audit findings await an explicit risk decision. See [Mission 12 release report](docs/MISSION12_MCP_RELEASE_REPORT.md). Earlier mission summaries below are historical snapshots.
+
+> **Mission 11 (2026-10-16):** The isolated Windows rerun validated the corrected Crusher GUI E2E path, a real Raw Iron → Iron Dust recipe (output increased from 2 to 3), vanilla adjacent and two distant placements, and timeout without late placement. Windows and Linux x64 each pass 231 MCP tests. The source version is still **2.0.4**; the GUI remains experimental, six moderate production advisories remain, and native ARM64 is untested. See [Mission 11 report](docs/MISSION11_FINAL_REPORT.md) for evidence and the beta decision.
+
+> **Mission 10 update (2026-10-14):** Four isolated server profiles were replayed through MCP stdio; Windows and Linux x64 builds and 230 TypeScript tests pass. The Processia GUI client opened a real Crusher menu and captured screenshots with music at 0%, while the corrected E2E runner still awaits a graphical rerun. See [Mission 10 report](docs/MISSION10_FINAL_REPORT.md). Earlier Mission 8/9 reports below are historical snapshots.
+
+> **Current validation snapshot (2026-10-14):** Minecraft Java 1.21.1 / NeoForge 21.1.259, Windows 11, Node.js 26.8.1. Release status and security findings are in [Release Readiness](docs/RELEASE_READINESS.md), [Mission 8](docs/MISSION8_FINAL_REPORT.md) and [Mission 9](docs/MISSION9_FINAL_REPORT.md). See the [installation guide](docs/INSTALLATION.md) before configuring a bridge.
+
+For NeoForge servers that reject vanilla Mineflayer clients, see [bridge-only mode](docs/BRIDGE_ONLY_MODE.md). The authenticated generic NeoForge bridge contract is documented in [the bridge guide](docs/universal-neoforge-bridge.md).
+
+The GUI harness remains experimental and is not required for vanilla or bridge-only use. Current release limitations and locally prepared, unpublished artifacts are recorded in [Release Readiness](docs/RELEASE_READINESS.md).
+
 <a href="https://github.com/yuniko-software/minecraft-mcp-server/actions">
   <img alt="CI" src="https://github.com/yuniko-software/minecraft-mcp-server/actions/workflows/build.yml/badge.svg">
 </a>
@@ -29,7 +41,7 @@ A Minecraft bot powered by large language models and [Mineflayer API](https://gi
 
 - Git
 - Node.js (>= 20.10.0)
-- A running Minecraft game (the setup below was tested with Minecraft 1.21.8 Java Edition included in Microsoft Game Pass)
+- A running Minecraft Java Edition server. The current fork runtime was validated with Minecraft 1.21.1; see [the compatibility matrix](docs/RELEASE_READINESS.md).
 - An MCP-compatible client. Claude Desktop will be used as an example, but other MCP clients are also supported
 
 ## Vanilla and NeoForge support
@@ -139,3 +151,5 @@ To get started with contributing, please see [CONTRIBUTING.md](CONTRIBUTING.md).
 ⭐ If you find this project useful, please consider giving it a star on GitHub! ⭐
 
 Your support helps make this project more visible to other people who might benefit from it.
+
+For NeoForge servers that reject vanilla Mineflayer clients, see [bridge-only mode](docs/BRIDGE_ONLY_MODE.md). The current isolated validation and known limitations are in [Release Readiness](docs/RELEASE_READINESS.md) and [Mission 7](docs/MISSION7_FINAL_REPORT.md).

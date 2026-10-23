@@ -4,6 +4,32 @@ import minecraftData from 'minecraft-data';
 import { ToolFactory } from '../tool-factory.js';
 import { log } from '../logger.js';
 
+const MAX_CRAFT_OPERATION_MS = 15_000;
+const activeCraftOperations = new WeakMap<object, Promise<void>>();
+
+/** Bounds the MCP wait while retaining a per-bot lock if Mineflayer settles late. */
+export async function boundedCraftOperation(bot: object, execute: () => Promise<void>, timeoutMs = MAX_CRAFT_OPERATION_MS): Promise<void> {
+  if (activeCraftOperations.has(bot)) throw new Error('craft-operation-pending-result-uncertain-no-retry');
+  const operation = Promise.resolve().then(execute);
+  activeCraftOperations.set(bot, operation);
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { timedOut = true; reject(new Error('craft-timeout-result-uncertain-no-retry')); }, timeoutMs);
+  });
+  const release = () => { if (activeCraftOperations.get(bot) === operation) activeCraftOperations.delete(bot); };
+  try {
+    await Promise.race([operation, timeout]);
+    release();
+  } catch (error) {
+    if (timedOut) void operation.then(release, release);
+    else release();
+    throw error;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 interface RecipeIngredient {
   name: string;
   count: number;
@@ -401,7 +427,7 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
     "Craft an item using a crafting recipe",
     {
       outputItem: z.string().trim().min(1).describe("Name of the item to craft"),
-      amount: z.number().int().min(1).optional().describe("Number of times to craft (default: 1)")
+      amount: z.number().int().min(1).max(16).optional().describe("Number of crafting operations (default: 1, maximum: 16 per request)")
     },
     async ({ outputItem, amount = 1 }) => {
       const outputQuery = normalizeItemName(outputItem);
@@ -445,9 +471,10 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
 
           try {
             if (candidate.craftingTable) {
-              await bot.craft(candidate.recipe as Parameters<typeof bot.craft>[0], 1, candidate.craftingTable as Parameters<typeof bot.craft>[2]);
+              await boundedCraftOperation(bot, () => bot.craft(candidate.recipe as Parameters<typeof bot.craft>[0], 1,
+                candidate.craftingTable as Parameters<typeof bot.craft>[2]));
             } else {
-              await bot.craft(candidate.recipe as Parameters<typeof bot.craft>[0], 1);
+              await boundedCraftOperation(bot, () => bot.craft(candidate.recipe as Parameters<typeof bot.craft>[0], 1));
             }
             craftedCount++;
             craftedThisAttempt = true;
@@ -455,7 +482,16 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
             break;
           } catch (err) {
             lastError = err instanceof Error ? err.message : String(err);
-            log('warn', `Failed to craft ${outputItem}: ${lastError}`);
+            log('warn', 'Crafting attempt failed after bounded recipe checks.');
+            return factory.createErrorResponse(JSON.stringify({
+              status: 'craft-result-uncertain-no-retry',
+              actionRequested: true,
+              actionSent: true,
+              serverConfirmed: false,
+              completedOperations: craftedCount,
+              error: lastError,
+              note: 'No alternate recipe or automatic retry was attempted after the crafting request was sent.',
+            }));
           }
         }
 
@@ -475,7 +511,15 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
         return factory.createErrorResponse(`Failed to craft ${outputItem}: ${lastError || "Missing ingredients or recipe not found"}`);
       }
 
-      return factory.createResponse(`Successfully crafted ${outputItem} ${craftedCount} time(s)`);
+      return factory.createResponse(JSON.stringify({
+        status: 'craft-request-completed-client-side',
+        actionRequested: true,
+        actionSent: true,
+        serverConfirmed: false,
+        outputItem,
+        completedOperations: craftedCount,
+        note: 'Mineflayer completed the crafting operation; no independent server-side inventory confirmation was performed.',
+      }));
     }
   );
 

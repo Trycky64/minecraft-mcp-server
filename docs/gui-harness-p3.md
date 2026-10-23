@@ -1,5 +1,7 @@
 # GUI client integration (P3)
 
+> This is the P3 design/configuration note. Its sample ports are historical test values. Current GUI runtime evidence and the no-teleport framing rule are in [MISSION7_FINAL_REPORT.md](MISSION7_FINAL_REPORT.md); select only the isolated ports allocated for a test run.
+
 The MCP GUI layer controls a real NeoForge client over a separate, authenticated loopback protocol. It is distinct from Mineflayer: Mineflayer remains the vanilla networking bot, while the GUI harness observes the client screen/menu and captures the actual client framebuffer. No HTML/JSON drawing is used as a screenshot substitute.
 
 ## Configuration
@@ -43,7 +45,7 @@ The server harness refuses weak secrets and public bind addresses. Do not put th
 | `gui-screenshot` | Capture/verify/retain a framebuffer PNG and return its path, SHA-256 and display metadata. |
 | `gui-capture-block` | Aim at an allowlisted Processia block, verify the client raycast against P2, and retain a world screenshot. |
 | `gui-set-display` | Change resolution and GUI scale in the isolated client game directory. |
-| `gui-wait-for` | Bounded wait for an active/closed screen, menu key or slot item/count. |
+| `gui-wait-for` | Bounded wait for `client_ready` (authenticated player, world, player chunk, loading screen ended, usable framebuffer), `interaction_ready` (client ready and no screen), an active/closed screen, menu key or slot item/count. |
 | `gui-run-e2e` | Compare a live P2 machine read with a real GUI/menu; optional item transfer and expected-output wait. |
 
 All bridge calls require an authenticated P2 session matching identity and endpoint. Every GUI session has a lease, a separate graph epoch and a server epoch. Re-login rotates the graph epoch; a server restart invalidates the P2 epoch; both conditions invalidate the MCP binding. A single GUI lease and one in-flight harness request serialize Codex/Claude actions so two MCP clients cannot interleave clicks on one shared GUI. The lease is owned by one MCP process ID: that owner may renew it, but another owner is refused with 423 until the first lease is explicitly released or expires.

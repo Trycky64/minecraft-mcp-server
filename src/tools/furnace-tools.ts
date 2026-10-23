@@ -16,11 +16,11 @@ export function registerFurnaceTools(factory: ToolFactory, getBot: () => minefla
       y: z.coerce.number().describe("Y coordinate"),
       z: z.coerce.number().describe("Z coordinate"),
       inputItem: z.string().trim().min(1).describe("Name of item to smelt"),
-      inputCount: z.number().int().positive().optional().describe("Amount of input to smelt (default: 1)"),
+      inputCount: z.number().int().min(1).max(64).optional().describe("Amount of input to smelt (default: 1, maximum: 64)"),
       fuelItem: z.string().trim().min(1).describe("Name of fuel item"),
-      fuelCount: z.number().int().positive().optional().describe("Amount of fuel to use (default: 1)"),
+      fuelCount: z.number().int().min(1).max(64).optional().describe("Amount of fuel to use (default: 1, maximum: 64)"),
       takeOutput: z.boolean().optional().describe("Whether to take output when ready (default: true)"),
-      timeoutMs: z.number().int().positive().optional().describe("Timeout waiting for output in ms (default: 60000)")
+      timeoutMs: z.number().int().min(100).max(120_000).optional().describe("Timeout waiting for output in ms (default: 60000, maximum: 120000)")
     },
     async ({
       x,
@@ -93,17 +93,35 @@ export function registerFurnaceTools(factory: ToolFactory, getBot: () => minefla
 
         if (!takeOutput) {
           return factory.createResponse(
-            `Started smelting ${resolvedInputCount} ${input.name} with ${resolvedFuelCount} ${fuel.name}`
+            `Smelt request sent for ${resolvedInputCount} ${input.name} with ${resolvedFuelCount} ${fuel.name}; completion is not confirmed`
           );
         }
 
         const output = await waitForOutput(furnace, timeoutMs);
         if (!output) {
-          return factory.createResponse(`No output after ${timeoutMs}ms`);
+          return factory.createResponse(JSON.stringify({
+            status: 'uncertain',
+            actionRequested: true,
+            actionSent: true,
+            clientObserved: false,
+            serverConfirmed: false,
+            input: { name: input.name, count: resolvedInputCount },
+            fuel: { name: fuel.name, count: resolvedFuelCount },
+            timeoutMs,
+            recoveryRequired: true,
+            note: 'No furnace output was observed before timeout. The furnace may still be processing; do not repeat the input or fuel action before re-inspecting its slots and state.',
+          }));
         }
 
         const taken = await furnace.takeOutput();
-        return factory.createResponse(`Smelted ${taken.count} ${taken.name}`);
+        return factory.createResponse(JSON.stringify({
+          status: 'output-observed-client-side',
+          actionRequested: true,
+          actionSent: true,
+          clientObservedOutput: { count: taken.count, name: taken.name },
+          serverConfirmed: false,
+          note: 'The furnace output was observed and taken through Mineflayer; there was no independent server-side inventory confirmation.',
+        }));
       } finally {
         cleanup();
       }

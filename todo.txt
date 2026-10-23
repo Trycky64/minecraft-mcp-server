@@ -1,0 +1,353 @@
+# PROCESSIA MCP SERVER — TODO
+# Minecraft 1.21.1 / NeoForge 21.1.259
+# Fork : yuniko-software/minecraft-mcp-server
+# Clients : Codex + Claude Code (extensions VS Code)
+# Projet cible : Processia
+# Statut : P0 validé ; P1 validé pour son périmètre, avec limites documentées
+#
+# OBJECTIF
+# Développer un serveur MCP complet pour permettre aux agents IA
+# de jouer, construire, inspecter, manipuler et tester Minecraft,
+# les mods NeoForge et toutes les machines de Processia.
+#
+# RÈGLES GÉNÉRALES
+# [ ] Préserver les fonctionnalités MCP vanilla existantes.
+# [ ] Maintenir la compatibilité Minecraft 1.21.1.
+# [ ] Ne jamais exposer les interfaces de diagnostic sur Internet.
+# [ ] Séparer les outils de lecture des outils modifiant le monde.
+# [ ] Préserver le fonctionnement normal du mod Processia.
+# [ ] Fournir des résultats structurés et vérifiables.
+# [ ] Ajouter des tests à chaque fonctionnalité.
+# [ ] Ne jamais annoncer PASS sans preuve.
+# [ ] Maintenir une documentation à jour.
+# [ ] Valider chaque phase avant de passer à la suivante.
+
+============================================================
+P0 — AUDIT, ARCHITECTURE ET BASE DU FORK
+============================================================
+
+[x] P0.1 — Auditer l'architecture TypeScript du MCP existant.
+[x] P0.2 — Identifier les outils Mineflayer disponibles.
+[x] P0.3 — Identifier les limitations des registres moddés.
+[x] P0.4 — Auditer les BlockEntities et capabilities Processia.
+[x] P0.5 — Définir l'architecture du bridge NeoForge.
+[x] P0.6 — Définir le protocole bridge versionné.
+[x] P0.7 — Prévoir l'authentification et la sécurité locale.
+[x] P0.8 — Prévoir la coexistence ClaudeBot / CodexBot.
+[x] P0.9 — Définir les tests unitaires et d'intégration.
+[x] P0.10 — Définir les phases d'implémentation.
+
+[x] P0.11 — Compléter l'architecture des GUI Minecraft.
+[x] P0.12 — Définir le client graphique instrumenté.
+[x] P0.13 — Définir les outils MCP GUI et screenshots.
+[x] P0.14 — Vérifier les dépendances et versions exactes.
+[x] P0.15 — Vérifier npm ci, build, tests et lint disponibles.
+[x] P0.16 — Établir une baseline de non-régression.
+[x] P0.17 — Valider définitivement P0.
+
+Critères de validation :
+[x] Architecture complète approuvée.
+[x] GUI fonctionnelles et visuelles prises en compte.
+[x] Build initial réussi.
+[x] Tests initiaux réussis ou anomalies documentées.
+[x] Aucune régression introduite.
+
+============================================================
+P1 — REGISTRES MINECRAFT ET SUPPORT DES MODS
+============================================================
+
+[x] P1.1 — Diagnostiquer les identifiants unknown des items.
+[x] P1.2 — Diagnostiquer les blocs type undefined.
+[x] P1.3 — Identifier la résolution des registres Mineflayer.
+[x] P1.4 — Vérifier le protocole Minecraft 1.21.1.
+[x] P1.5 — Définir un RegistryService extensible.
+[x] P1.6 — Résoudre les identifiants namespacés lorsque leur mapping est disponible.
+[x] P1.7 — Supporter minecraft:* et processia:* (Processia reste non résolu sans mapping runtime).
+[x] P1.8 — Prévoir les autres namespaces moddés.
+[x] P1.9 — Exposer les IDs bruts et les clés résolues des items.
+[x] P1.10 — Exposer les IDs bruts et les clés résolues des blocs.
+[x] P1.11 — Gérer proprement les entrées inconnues.
+[x] P1.12 — Ajouter la recherche de registres.
+[x] P1.13 — Rechercher les blocs moddés si leurs state IDs sont connus.
+[x] P1.14 — Rechercher les items moddés si leur mapping est connu.
+[x] P1.15 — Résoudre equip-item par ID namespacé si son mapping est connu.
+[x] P1.16 — Adapter place_block aux blocs moddés avec ID explicite et mapping runtime autoritatif.
+[x] P1.17 — Vérifier les recettes et types personnalisés (diagnostic effectué; codecs custom non pris en charge).
+[x] P1.18 — Ajouter les tests unitaires des registres.
+[x] P1.19 — Tester les blocs et items M2 Processia.
+[x] P1.20 — Valider P1 sans régression vanilla.
+
+P1.19 : validation réelle sur serveur jetable NeoForge avec le bridge : six blocs M2 et leurs items résolus par mappings autoritatifs; iron_dust observé en slot 36, quantité 3, ID brut 1357 malgré le nom Mineflayer « unknown ». L’inspection bridge des six machines a réussi. Le placement Mineflayer de crusher reste en échec (timeout blockUpdate; readback non égal à processia:crusher), donc le critère de placement demeure ouvert. Le PartialReadError de declare_recipes reste observé côté décodeur Mineflayer; le bridge lit les recettes réelles.
+
+Critères de validation :
+[x] processia:coal_generator correctement identifié.
+[x] processia:crusher correctement identifié.
+[x] processia:press correctement identifié.
+[x] processia:wiremill correctement identifié.
+[x] processia:basic_battery correctement identifié.
+[x] processia:energy_cable correctement identifié.
+[x] Inventaires moddés correctement identifiés.
+[ ] Placement Mineflayer d’un bloc moddé fonctionnel (non validé; le readback bridge est fonctionnel).
+[x] Les IDs inconnus ne sont jamais inventés.
+
+============================================================
+P2 — BRIDGE NEOFORGE LOCAL ET SÉCURISÉ
+============================================================
+
+[x] P2.1 — Implémenter le client bridge TypeScript.
+[x] P2.2 — Implémenter le bridge Java côté Processia.
+[x] P2.3 — Réserver le bridge aux environnements de dev.
+[x] P2.4 — Écouter exclusivement sur 127.0.0.1.
+[x] P2.5 — Définir le protocole JSON versionné.
+[x] P2.6 — Implémenter le framing des messages.
+[x] P2.7 — Implémenter le handshake authentifié.
+[ ] P2.8 — Générer un secret temporaire au démarrage.
+[x] P2.9 — Implémenter les requestId uniques.
+[x] P2.10 — Implémenter les timeouts et codes d'erreur.
+[x] P2.11 — Valider les requêtes côté TypeScript et Java.
+[x] P2.12 — Limiter les tailles de messages.
+[x] P2.13 — Limiter le débit et les connexions.
+[x] P2.14 — Exécuter les accès au monde sur le thread serveur.
+[x] P2.15 — Refuser les chunks non chargés.
+[x] P2.16 — Supporter plusieurs clients MCP simultanés.
+[x] P2.17 — Implémenter processia_bridge_status.
+[x] P2.18 — Tester la reconnexion après redémarrage.
+[x] P2.19 — Tester les refus d'accès non autorisés.
+[ ] P2.20 — Valider P2.
+
+Critères de validation :
+[x] Bridge disponible uniquement en développement.
+[x] Aucun service exposé publiquement.
+[x] Claude et Codex peuvent se connecter simultanément.
+[x] Authentification et version vérifiées.
+[x] Erreurs structurées et reproductibles.
+[x] Aucun accès au monde hors thread serveur.
+
+P2.8 reste ouvert : les essais génèrent un secret cryptographiquement aléatoire hors dépôt et le transmettent par variable d'environnement, mais le bridge ne génère pas lui-même un secret au démarrage. P2.20 reste donc en attente de cette exigence.
+
+============================================================
+P3 — INSPECTION DU MONDE ET DES MACHINES
+============================================================
+
+[x] P3.1 — Lire l'identifiant réel d'un bloc.
+[x] P3.2 — Lire ses BlockStates et propriétés.
+[x] P3.3 — Détecter la présence d'une BlockEntity.
+[x] P3.4 — Identifier son type.
+[x] P3.5 — Lire les inventaires internes.
+[x] P3.6 — Lire les capacités ItemHandler par face.
+[x] P3.7 — Lire les capacités EnergyStorage par face.
+[x] P3.8 — Lire l'énergie stockée et maximale.
+[x] P3.9 — Lire les capacités de réception et extraction.
+[x] P3.10 — Lire la progression des machines.
+[x] P3.11 — Lire les recettes actives.
+[x] P3.12 — Lire les temps de combustion.
+[x] P3.13 — Lire les modes redstone.
+[x] P3.14 — Lire les états locked et active.
+[x] P3.15 — Inspecter les câbles et réseaux FE.
+[x] P3.16 — Distinguer stockage et transfert d'énergie.
+[x] P3.17 — Rechercher les machines dans une zone bornée.
+[x] P3.19 — Ajouter inspect-processia-machine.
+[x] P3.20 — Ajouter inspect-processia-capabilities.
+[x] P3.21 — Ajouter list-processia-machines.
+[x] P3.22 — Tester les six blocs M2.
+[x] P3.23 — Tester les orientations et les faces.
+[x] P3.24 — Valider P3.
+
+Critères de validation :
+[x] Toutes les machines M2 inspectables.
+[x] FE et inventaires lus depuis le serveur réel.
+[x] Résultats structurés en JSON.
+[x] Capabilities par face correctement distinguées.
+[x] Aucun chunk chargé automatiquement sans autorisation.
+[x] Aucune modification du monde pendant l'inspection.
+
+============================================================
+P4 — OUTILS D'ACTION ET ADMINISTRATION
+============================================================
+
+[ ] P4.1 — Ajouter un outil de commande contrôlée.
+[ ] P4.2 — Ajouter set_gamemode.
+[ ] P4.3 — Ajouter give_item avec ID namespacé.
+[ ] P4.4 — Ajouter teleport_player.
+[ ] P4.5 — Ajouter clear_inventory.
+[ ] P4.6 — Ajouter inspect_player.
+[ ] P4.7 — Ajouter set_time et set_weather pour les tests.
+[ ] P4.8 — Améliorer place_block pour les blocs moddés.
+[ ] P4.9 — Améliorer dig_block et ses vérifications.
+[ ] P4.10 — Ajouter une sélection d'item par slot.
+[ ] P4.11 — Ajouter une interaction clic droit sur bloc.
+[ ] P4.12 — Ajouter l'interaction avec les entités.
+[ ] P4.13 — Ajouter insert_item dans une machine.
+[ ] P4.14 — Ajouter extract_item depuis une machine.
+[ ] P4.15 — Ajouter une lecture d'état avant/après action.
+[ ] P4.16 — Ajouter des permissions par outil.
+[ ] P4.17 — Ajouter une zone de test configurable.
+[ ] P4.18 — Empêcher les mutations hors zone autorisée.
+[ ] P4.19 — Journaliser les actions mutatrices.
+[ ] P4.20 — Gérer les conflits ClaudeBot / CodexBot.
+[ ] P4.21 — Tester les refus et actions non autorisées.
+[ ] P4.22 — Valider P4.
+
+Critères de validation :
+[ ] Les commandes n'ont plus besoin de passer par send_chat.
+[ ] Les agents peuvent manipuler les machines M2.
+[ ] Les actions sont contrôlées et traçables.
+[ ] Les permissions sont explicites.
+[ ] Les modifications restent dans un monde de test.
+
+============================================================
+P5 — GUI MINECRAFT ET CLIENT GRAPHIQUE
+============================================================
+
+P5.1 — MENUS ET INVENTAIRES
+
+[ ] P5.1.1 — Ouvrir une GUI vanilla.
+[ ] P5.1.2 — Ouvrir une GUI Processia.
+[ ] P5.1.3 — Fermer une GUI.
+[ ] P5.1.4 — Identifier le type de menu.
+[ ] P5.1.5 — Lire tous les slots du menu.
+[ ] P5.1.6 — Lire le curseur et l'item tenu.
+[ ] P5.1.7 — Cliquer gauche sur un slot.
+[ ] P5.1.8 — Cliquer droit sur un slot.
+[ ] P5.1.9 — Effectuer un shift-click.
+[ ] P5.1.10 — Déplacer une pile d'items.
+[ ] P5.1.11 — Déplacer une quantité précise.
+[ ] P5.1.12 — Vérifier les changements côté serveur.
+
+P5.2 — CONTRÔLES DES MACHINES
+
+[ ] P5.2.1 — Lire les données synchronisées des menus.
+[ ] P5.2.2 — Lire les jauges FE.
+[ ] P5.2.3 — Lire la progression.
+[ ] P5.2.4 — Lire la combustion.
+[ ] P5.2.5 — Cliquer sur les boutons Processia.
+[ ] P5.2.6 — Modifier les modes redstone via GUI.
+[ ] P5.2.7 — Vérifier les états après interaction.
+[ ] P5.2.8 — Tester les GUI de toutes les machines M2.
+
+P5.3 — CLIENT GRAPHIQUE INSTRUMENTÉ
+
+[ ] P5.3.1 — Définir l'architecture du client graphique.
+[ ] P5.3.2 — Connecter le client graphique au MCP.
+[x] P5.3.3 — Capturer de vrais screenshots Minecraft (framebuffer client réel, preuves P3.5).
+[x] P5.3.4 — Capturer la GUI active (5 écrans M2, rapport runtime P3.5).
+[ ] P5.3.5 — Déplacer le curseur dans la GUI.
+[ ] P5.3.6 — Survoler les composants GUI.
+[ ] P5.3.7 — Lire les infobulles affichées.
+[ ] P5.3.8 — Cliquer sur les contrôles visuels.
+[x] P5.3.9 — Tester plusieurs résolutions (1280×720 et 1600×900, preuves P3.5 ; certains essais de menu restent en échec).
+[x] P5.3.10 — Tester plusieurs échelles GUI (2 et 3, preuves P3.5 ; certains essais de menu restent en échec).
+[ ] P5.3.11 — Comparer captures et références visuelles.
+[ ] P5.3.12 — Détecter les erreurs de rendu.
+[x] P5.3.13 — Associer les captures aux rapports de tests (chemins consignés dans runtime-visual-validation.json).
+
+P5.4 — VALIDATION GUI
+
+[ ] P5.4.1 — Tester GUI Coal Generator.
+[ ] P5.4.2 — Tester GUI Crusher.
+[ ] P5.4.3 — Tester GUI Press.
+[ ] P5.4.4 — Tester GUI Wiremill.
+[ ] P5.4.5 — Tester GUI Basic Battery.
+[ ] P5.4.6 — Vérifier les mises à jour en temps réel.
+[ ] P5.4.7 — Vérifier la synchronisation client/serveur.
+[ ] P5.4.8 — Vérifier la fermeture et réouverture.
+[ ] P5.4.9 — Vérifier la persistance des données.
+[ ] P5.4.10 — Valider P5.
+
+Critères de validation :
+[ ] Claude et Codex peuvent ouvrir les GUI.
+[ ] Ils peuvent manipuler les slots et boutons.
+[ ] Ils peuvent lire les valeurs des machines.
+[ ] Ils peuvent obtenir de vraies captures d'écran.
+[ ] Ils peuvent inspecter les infobulles.
+[ ] Les changements sont confirmés côté serveur.
+[ ] Les tests GUI sont reproductibles.
+
+============================================================
+P6 — AUTOMATISATION, GAMETESTS ET VALIDATION M2
+============================================================
+
+P6.1 — FRAMEWORK DE TESTS
+
+[ ] P6.1.1 — Définir les scénarios de tests.
+[ ] P6.1.2 — Définir les préconditions.
+[ ] P6.1.3 — Définir les assertions PASS/FAIL.
+[ ] P6.1.4 — Créer une zone de test isolée.
+[ ] P6.1.5 — Ajouter un reset contrôlé de la zone.
+[ ] P6.1.6 — Ajouter une gestion déterministe des ticks.
+[ ] P6.1.7 — Ajouter des snapshots avant/après.
+[ ] P6.1.8 — Ajouter les rapports JSON.
+[ ] P6.1.9 — Ajouter les rapports Markdown.
+[ ] P6.1.10 — Ajouter les captures et preuves.
+[ ] P6.1.11 — Ajouter les scénarios en lecture seule.
+[ ] P6.1.12 — Ajouter les scénarios mutateurs autorisés.
+[ ] P6.1.13 — Prévenir les conflits entre agents.
+
+P6.2 — TESTS DES MACHINES M2
+
+[ ] P6.2.1 — Tester Coal Generator.
+[ ] P6.2.2 — Vérifier combustion et production FE.
+[ ] P6.2.3 — Tester Crusher.
+[ ] P6.2.4 — Vérifier recettes, progression et énergie.
+[ ] P6.2.5 — Tester Press.
+[ ] P6.2.6 — Tester Wiremill.
+[ ] P6.2.7 — Tester Basic Battery.
+[ ] P6.2.8 — Vérifier capacité et sidedness.
+[ ] P6.2.9 — Tester T1 Energy Cable.
+[ ] P6.2.10 — Vérifier les transferts FE.
+[ ] P6.2.11 — Tester les réseaux multi-machines.
+[ ] P6.2.12 — Tester les limites de débit.
+[ ] P6.2.13 — Tester les pertes et duplications.
+[ ] P6.2.14 — Tester la persistance après redémarrage.
+[ ] P6.2.15 — Tester les interactions GUI complètes.
+
+P6.3 — INTÉGRATION ET NON-RÉGRESSION
+
+[ ] P6.3.1 — Conserver les GameTests M2 existants.
+[ ] P6.3.2 — Ajouter les tests d'intégration MCP.
+[ ] P6.3.3 — Tester le serveur dédié.
+[ ] P6.3.4 — Tester le client graphique.
+[ ] P6.3.5 — Tester ClaudeBot et CodexBot simultanément.
+[ ] P6.3.6 — Tester la reconnexion des agents.
+[ ] P6.3.7 — Tester les arrêts et redémarrages.
+[ ] P6.3.8 — Vérifier les performances.
+[ ] P6.3.9 — Vérifier la sécurité.
+[ ] P6.3.10 — Vérifier les fonctionnalités vanilla.
+[ ] P6.3.11 — Finaliser la documentation.
+[ ] P6.3.12 — Valider P6.
+
+Critères de validation :
+[ ] Toutes les machines M2 testées.
+[ ] Tests FE et inventaires validés.
+[ ] GUI fonctionnelles et visuelles validées.
+[ ] Scénarios automatisés reproductibles.
+[ ] Aucun item ni FE créé ou perdu anormalement.
+[ ] Aucun effet de bord hors zone de test.
+[ ] Aucune régression vanilla.
+[ ] Rapports et preuves exploitables.
+
+============================================================
+VALIDATION FINALE — PROCESSIA MCP SERVER
+============================================================
+
+[ ] Fork compilable et maintenable.
+[ ] Compatibilité Minecraft 1.21.1 vérifiée.
+[ ] Compatibilité NeoForge 21.1.259 vérifiée.
+[ ] Compatibilité Claude Code vérifiée.
+[ ] Compatibilité Codex vérifiée.
+[ ] Blocs et items moddés identifiés correctement.
+[ ] Commandes et interactions Minecraft fonctionnelles.
+[ ] Bridge NeoForge sécurisé.
+[ ] Inspection complète des machines.
+[ ] Lecture des capacités FE et inventaires.
+[ ] Interactions GUI complètes.
+[ ] Captures d'écran et validation visuelle.
+[ ] Tests automatisés des machines M2.
+[ ] Rapports PASS/FAIL fiables.
+[ ] Tests unitaires et intégration réussis.
+[ ] Documentation d'installation complète.
+[ ] Aucun bridge de diagnostic actif en production.
+
+============================================================
+FIN DU TODO
+============================================================

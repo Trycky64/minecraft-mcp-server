@@ -23,12 +23,29 @@ function positionSchema() {
     z: z.number().int().min(-30_000_000).max(30_000_000),
   };
 }
-function itemAt(inventory: unknown, slot: number): { item: string | null; count: number } | null {
+export function itemAt(inventory: unknown, slot: number): { item: string | null; count: number } | null {
   if (inventory === null || typeof inventory !== 'object') return null;
-  const value = inventory as { items?: unknown };
-  if (!Array.isArray(value.items)) return null;
-  const row = value.items.find((item) => item !== null && typeof item === 'object' && (item as { slot?: unknown }).slot === slot) as { item?: unknown; count?: unknown } | undefined;
+  const value = inventory as { items?: unknown; faces?: unknown };
+  const unsided = Array.isArray(value.faces) ? value.faces.find((face) => face !== null && typeof face === 'object' && (face as { face?: unknown }).face === 'unsided') as { items?: unknown } | undefined : undefined;
+  const items = Array.isArray(unsided?.items) ? unsided.items : value.items;
+  if (!Array.isArray(items)) return null;
+  const row = items.find((item) => item !== null && typeof item === 'object' && (item as { slot?: unknown }).slot === slot) as { item?: unknown; count?: unknown } | undefined;
   return row ? { item: typeof row.item === 'string' ? row.item : null, count: typeof row.count === 'number' ? row.count : 0 } : null;
+}
+
+export function unsidedEnergy(capabilities: unknown): { energyStored: number; energyCapacity: number } | null {
+  if (!Array.isArray(capabilities)) return null;
+  const row = capabilities.find((entry) => entry !== null && typeof entry === 'object' && (entry as { face?: unknown }).face === 'unsided') as { available?: unknown; stored?: unknown; capacity?: unknown } | undefined;
+  return row?.available === true && typeof row.stored === 'number' && typeof row.capacity === 'number'
+    ? { energyStored: row.stored, energyCapacity: row.capacity } : null;
+}
+
+export function outputIncreased(before: { item: string | null; count: number } | null,
+  after: { item: string | null; count: number } | null, expectedItem: string, minimumIncrease: number): boolean {
+  if (before === null || after === null || after.item !== expectedItem) return false;
+  if (before.item !== null && before.item !== expectedItem) return false;
+  const baseline = before.item === expectedItem ? before.count : 0;
+  return after.count - baseline >= minimumIncrease;
 }
 
 export function energySyncTolerance(guiValues: Record<string, unknown>, serverMachine: Record<string, unknown>): number {
@@ -49,6 +66,16 @@ export function registerGuiTools(factory: ToolFactory, gui: GuiHarnessClient, br
 
   factory.registerTool('gui-inspect-screen', 'Inspect the real active Minecraft screen, menu, slots, widgets and client resolution', {}, async () => {
     try { return json(factory, await gui.call('/v1/screen')); } catch (error) { return failed(factory, error); }
+  }, { requiresConnection: false });
+
+  factory.registerTool('gui-open-pause', 'Open the normal pause menu from a ready isolated test world', {}, async () => {
+    if (gui.config.mode !== 'TEST_MUTATION' || !gui.config.testWorldAcknowledged) return failed(factory, new Error('gui-test-mutation-disabled'));
+    try { return json(factory, await gui.call('/v1/open-pause')); } catch (error) { return failed(factory, error); }
+  }, { requiresConnection: false });
+
+  factory.registerTool('gui-set-music-zero', 'Set only the isolated GUI test client music category to zero from Music & Sounds', {}, async () => {
+    if (gui.config.mode !== 'TEST_MUTATION' || !gui.config.testWorldAcknowledged) return failed(factory, new Error('gui-test-mutation-disabled'));
+    try { return json(factory, await gui.call('/v1/set-music-zero')); } catch (error) { return failed(factory, error); }
   }, { requiresConnection: false });
 
   factory.registerTool('gui-open-machine', 'Open an allowlisted Processia machine through the real client block interaction', {
@@ -160,7 +187,7 @@ export function registerGuiTools(factory: ToolFactory, gui: GuiHarnessClient, br
   }, { requiresConnection: false });
 
   factory.registerTool('gui-wait-for', 'Wait for a screen, menu or slot condition with a bounded timeout', {
-    condition: z.string().min(1).max(256).refine((value) => ['screen_active', 'screen_closed'].includes(value) || value.startsWith('menu:') || /^slot:\d+:[a-z0-9_.-]+:[a-z0-9/._-]+:\d+$/.test(value) || /^target:-?\d+:-?\d+:-?\d+$/.test(value), 'Unsupported wait condition'),
+    condition: z.string().min(1).max(256).refine((value) => ['screen_active', 'screen_closed', 'client_ready', 'interaction_ready'].includes(value) || /^screen:[A-Za-z][A-Za-z0-9]*$/.test(value) || value.startsWith('menu:') || /^slot:\d+:[a-z0-9_.-]+:[a-z0-9/._-]+:\d+$/.test(value) || /^target:-?\d+:-?\d+:-?\d+$/.test(value), 'Unsupported wait condition'),
     timeoutMs: z.number().int().min(50).max(10000).default(3000),
   }, async (request) => {
     try { return json(factory, await gui.call('/v1/wait-for', request)); } catch (error) { return failed(factory, error); }
@@ -196,6 +223,7 @@ export function registerGuiTools(factory: ToolFactory, gui: GuiHarnessClient, br
     const assertions = report.assertions as Array<Record<string, unknown>>;
     try {
       const before = await bridge.inspectMachine({ dimension: request.dimension, x: request.x, y: request.y, z: request.z });
+      const outputBefore = request.expectedOutputItem ? itemAt(before.inventory, request.machineOutputSlot) : null;
       const rightBlock = before.block === request.machine;
       assertions.push({ id: 'bridge-machine-identity', status: rightBlock ? 'PASS' : 'FAIL', observed: before.block, expected: request.machine });
       if (!rightBlock || !before.blockEntityPresent) throw new Error('gui-e2e-machine-not-present');
@@ -207,8 +235,9 @@ export function registerGuiTools(factory: ToolFactory, gui: GuiHarnessClient, br
       assertions.push({ id: 'menu-server-type', status: menuMatched ? 'PASS' : 'FAIL', observed: screen.menuId, expected: request.machine });
       if (!menuMatched) throw new Error('gui-e2e-menu-mismatch');
       const syncedValues = screen.syncedValues;
-      const serverMachine = before.processiaMachine;
-      if (syncedValues !== null && typeof syncedValues === 'object' && serverMachine !== undefined) {
+      const genericEnergy = unsidedEnergy(before.energyCapabilities);
+      const serverMachine = before.processiaMachine ?? genericEnergy;
+      if (syncedValues !== null && typeof syncedValues === 'object' && serverMachine != null) {
         const guiValues = syncedValues as Record<string, unknown>;
         const energyDelta = Math.abs(Number(guiValues.energyStored) - Number(serverMachine.energyStored));
         // A live generator/network may transfer one input-rate quantum between
@@ -218,11 +247,16 @@ export function registerGuiTools(factory: ToolFactory, gui: GuiHarnessClient, br
         const energyCapacityMatches = guiValues.energyCapacity === serverMachine.energyCapacity;
         const energyMatches = Number.isFinite(energyDelta) && energyDelta <= energyTolerance;
         assertions.push({ id: 'synced-energy-vs-server', status: energyMatches && energyCapacityMatches ? 'PASS' : 'FAIL', gui: { energyStored: guiValues.energyStored, energyCapacity: guiValues.energyCapacity }, server: { energyStored: serverMachine.energyStored, energyCapacity: serverMachine.energyCapacity }, allowedEnergyDelta: energyTolerance, observedDelta: energyDelta });
-        const progressDelta = Math.abs(Number(guiValues.progress) - Number(serverMachine.progress));
-        const burnDelta = Math.abs(Number(guiValues.burnTime) - Number(serverMachine.burnTime));
-        const progressMatches = Number.isFinite(progressDelta) && progressDelta <= 2;
-        const burnMatches = Number.isFinite(burnDelta) && burnDelta <= 2;
-        assertions.push({ id: 'synced-progress-burn-redstone-vs-server', status: progressMatches && burnMatches && guiValues.redstoneMode === serverMachine.redstoneMode ? 'PASS' : 'FAIL', gui: { progress: guiValues.progress, progressMaximum: guiValues.progressMaximum, burnTime: guiValues.burnTime, redstoneMode: guiValues.redstoneMode }, server: { progress: serverMachine.progress, progressMaximum: serverMachine.progressMaximum, burnTime: serverMachine.burnTime, redstoneMode: serverMachine.redstoneMode }, toleranceTicks: 2 });
+        if (before.processiaMachine) {
+          const processiaMachine = before.processiaMachine;
+          const progressDelta = Math.abs(Number(guiValues.progress) - Number(processiaMachine.progress));
+          const burnDelta = Math.abs(Number(guiValues.burnTime) - Number(processiaMachine.burnTime));
+          const progressMatches = Number.isFinite(progressDelta) && progressDelta <= 2;
+          const burnMatches = Number.isFinite(burnDelta) && burnDelta <= 2;
+          assertions.push({ id: 'synced-progress-burn-redstone-vs-server', status: progressMatches && burnMatches && guiValues.redstoneMode === processiaMachine.redstoneMode ? 'PASS' : 'FAIL', gui: { progress: guiValues.progress, progressMaximum: guiValues.progressMaximum, burnTime: guiValues.burnTime, redstoneMode: guiValues.redstoneMode }, server: { progress: processiaMachine.progress, progressMaximum: processiaMachine.progressMaximum, burnTime: processiaMachine.burnTime, redstoneMode: processiaMachine.redstoneMode }, toleranceTicks: 2 });
+        } else {
+          assertions.push({ id: 'synced-progress-burn-redstone-vs-server', status: 'INCONCLUSIVE', detail: 'The generic bridge does not expose mod-private progress, combustion or redstone values.' });
+        }
         report.bridgeMachineBefore = serverMachine;
         report.guiSyncedValues = guiValues;
       } else {
@@ -230,6 +264,7 @@ export function registerGuiTools(factory: ToolFactory, gui: GuiHarnessClient, br
       }
 
       if (request.inputPlayerSlot !== undefined) {
+        const sourceBefore = Array.isArray(screen.slots) ? (screen.slots as Array<Record<string, unknown>>).find((slot) => slot.slotId === request.inputPlayerSlot) : undefined;
         if (request.transferCount !== undefined) {
           if (request.machineInputSlot === undefined) throw new Error('gui-e2e-exact-transfer-requires-machine-input-slot');
           const transfer = await gui.call('/v1/move-items', { sourceSlot: request.inputPlayerSlot, targetSlot: request.machineInputSlot, count: request.transferCount });
@@ -249,6 +284,13 @@ export function registerGuiTools(factory: ToolFactory, gui: GuiHarnessClient, br
           const transferMatches = guiSlot && serverSlot && guiSlot.item === serverSlot.item && guiSlot.count === serverSlot.count;
           const transferCountMatches = request.transferCount === undefined || (serverSlot?.count ?? 0) >= request.transferCount;
           assertions.push({ id: 'gui-bridge-slot-comparison', status: transferMatches && transferCountMatches ? 'PASS' : 'FAIL', gui: guiSlot ?? null, bridgeAfter: serverSlot, requestedTransferCount: request.transferCount ?? null });
+          if (request.transferCount !== undefined) {
+            const sourceAfter = Array.isArray(afterTransfer.slots) ? (afterTransfer.slots as Array<Record<string, unknown>>).find((slot) => slot.slotId === request.inputPlayerSlot) : undefined;
+            const sourceDecremented = typeof sourceBefore?.count === 'number' && typeof sourceAfter?.count === 'number'
+              && sourceBefore.count - sourceAfter.count === request.transferCount;
+            assertions.push({ id: 'player-source-decrement', status: sourceDecremented ? 'PASS' : 'FAIL', before: sourceBefore?.count ?? null, after: sourceAfter?.count ?? null, expectedDecrease: request.transferCount });
+            if (!sourceDecremented) throw new Error('gui-e2e-player-source-decrement-mismatch');
+          }
           if (!transferMatches || !transferCountMatches) throw new Error('gui-e2e-menu-bridge-slot-mismatch');
         }
       }
@@ -260,16 +302,20 @@ export function registerGuiTools(factory: ToolFactory, gui: GuiHarnessClient, br
       assertions.push({ id: 'bridge-before-after-machine-identity', status: sameMachine ? 'PASS' : 'FAIL', before: { block: before.block, blockStateId: before.blockStateId, blockEntityType: before.blockEntityType }, after: { block: after.block, blockStateId: after.blockStateId, blockEntityType: after.blockEntityType } });
 
       if (request.expectedOutputItem) {
+        if (request.inputPlayerSlot === undefined || request.machineInputSlot === undefined || outputBefore === null) {
+          assertions.push({ id: 'server-recipe-output-delta', status: 'INCONCLUSIVE', detail: 'A known input transfer and readable output baseline are required to prove a new recipe output.', outputBefore });
+          throw new Error('gui-e2e-recipe-prerequisites-unavailable');
+        }
         const deadline = Date.now() + request.timeoutMs;
         let output: { item: string | null; count: number } | null = null;
         while (Date.now() < deadline) {
           const latest = await bridge.inspectMachine({ dimension: request.dimension, x: request.x, y: request.y, z: request.z });
           output = itemAt(latest.inventory, request.machineOutputSlot);
-          if (output !== null && output.item === request.expectedOutputItem && output.count >= request.minimumOutputCount) break;
+          if (outputIncreased(outputBefore, output, request.expectedOutputItem, request.minimumOutputCount)) break;
           await new Promise((resolve) => setTimeout(resolve, 1000));
         }
-        const passed = output !== null && output.item === request.expectedOutputItem && output.count >= request.minimumOutputCount;
-        assertions.push({ id: 'server-recipe-output', status: passed ? 'PASS' : 'FAIL', expectedItem: request.expectedOutputItem, minimumCount: request.minimumOutputCount, observed: output });
+        const passed = outputIncreased(outputBefore, output, request.expectedOutputItem, request.minimumOutputCount);
+        assertions.push({ id: 'server-recipe-output-delta', status: passed ? 'PASS' : 'FAIL', expectedItem: request.expectedOutputItem, minimumIncrease: request.minimumOutputCount, before: outputBefore, after: output });
         if (!passed) throw new Error('gui-e2e-recipe-output-timeout');
       } else {
         assertions.push({ id: 'recipe-execution', status: 'NOT_REQUESTED', detail: 'No expectedOutputItem was supplied; this run validates GUI/menu and live server comparison only.' });

@@ -1,5 +1,7 @@
 # Mission autonome finale — état de preuve (2026-10-14)
 
+> **Historical snapshot superseded by Mission 7.** The GUI camera behavior, runtime availability, dependency audit and test count below describe an earlier point in the same work. See [MISSION7_FINAL_REPORT.md](MISSION7_FINAL_REPORT.md) and [RELEASE_READINESS.md](RELEASE_READINESS.md) for current results.
+
 ## Verdict
 
 **PARTIAL.** La mission complète P0–P6 n'est pas validée. Le code et les tests couvrent des fondations P1/P2, des inspections P3 et un harness GUI, mais P4 n'est pas implémentée comme plan d'administration borné, plusieurs critères P3/P5/P6 ne sont pas prouvés, et le runtime isolé n'était pas actif pendant cette reprise. Le serveur utilisateur `127.0.0.1:25565` n'a pas été contacté ni modifié.

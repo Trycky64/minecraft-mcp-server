@@ -1,8 +1,10 @@
 import { z } from "zod";
 import mineflayer from 'mineflayer';
+import type { Item } from 'prismarine-item';
 import { ToolFactory } from '../tool-factory.js';
 import type { RuntimeRegistryContext } from '../services/runtime-registry-service.js';
 import { annotateItem, resolveItemType } from '../services/registry-reporting.js';
+import { getProtocolDecodeStatus } from '../services/protocol-decode-monitor.js';
 
 interface InventoryItem {
   name: string;
@@ -29,10 +31,9 @@ export function registerInventoryTools(
         slot: item.slot
       }));
 
-      const snapshotStatus = registryContext?.protocolDecode.inventory ?? 'unverified';
-      let inventoryText = !registryContext
-        ? (items.length === 0 ? 'Inventory is empty' : `Found ${items.length} items in inventory:\n\n`)
-        : snapshotStatus === 'incomplete'
+      const protocolStatus = getProtocolDecodeStatus(bot._client as never);
+      const snapshotStatus = registryContext?.protocolDecode.inventory ?? protocolStatus.inventory;
+      let inventoryText = snapshotStatus === 'incomplete'
         ? `Inventory snapshot INCOMPLETE; listed stacks may be stale. ${items.length} stack(s) currently exposed.\n`
         : snapshotStatus === 'unverified'
           ? `Inventory snapshot not verified by a complete server packet. ${items.length} stack(s) currently exposed.\n`
@@ -45,7 +46,16 @@ export function registerInventoryTools(
         registryEpoch: registryContext?.registryEpoch ?? null,
         items: items.map((item) => annotateItem(item, registryContext)),
         snapshotStatus,
-        decodeIssues: registryContext?.protocolDecode.issues.filter((issue) => issue.packetName === 'window_items' || issue.packetName === 'set_slot') ?? [],
+        playerInventory: {
+          selectedHotbarSlot: Number.isInteger(bot.quickBarSlot) ? bot.quickBarSlot : null,
+          selectedInventorySlot: Number.isInteger(bot.quickBarSlot) && Number.isInteger(bot.inventory.hotbarStart)
+            ? bot.inventory.hotbarStart + bot.quickBarSlot!
+            : null,
+          activeWindowId: bot.currentWindow?.id ?? 0,
+          cursor: annotateCursorItem(bot.currentWindow?.selectedItem ?? bot.inventory.selectedItem, registryContext),
+          slots: (bot.inventory.slots ?? []).map((item, slot) => item ? annotateItem({ ...item, slot }, registryContext) : null),
+        },
+        decodeIssues: (registryContext?.protocolDecode.issues ?? protocolStatus.issues).filter((issue) => issue.packetName === 'window_items' || issue.packetName === 'set_slot'),
       })}`;
 
       return factory.createResponse(inventoryText);
@@ -106,7 +116,26 @@ export function registerInventoryTools(
       }
 
       await bot.equip(item, destination as mineflayer.EquipmentDestination);
-      return factory.createResponse(`Equipped ${item.name} to ${destination}`);
+      const destinationSlot = destination === 'hand'
+        ? (!Number.isInteger(bot.quickBarSlot) || !Number.isInteger(bot.inventory.hotbarStart) ? null : bot.inventory.hotbarStart + bot.quickBarSlot!)
+        : (typeof bot.getEquipmentDestSlot === 'function' ? bot.getEquipmentDestSlot(destination as mineflayer.EquipmentDestination) : null);
+      const observedItem = destinationSlot === null ? null : bot.inventory.slots[destinationSlot] ?? null;
+      const observed = observedItem?.type === item.type && observedItem.count === item.count;
+      return factory.createResponse(JSON.stringify({
+        status: observed ? 'client-observed' : 'uncertain',
+        actionRequested: true,
+        actionSent: true,
+        clientObserved: observed,
+        serverConfirmed: false,
+        item: { mineflayerName: item.name, rawNumericId: item.type, count: item.count },
+        destination,
+        destinationSlot,
+        note: 'Mineflayer completed equip handling and the local slot model was inspected; no independent server acknowledgement was correlated with this equipment change.',
+      }));
     }
   );
+}
+
+function annotateCursorItem(item: Item | null | undefined, context: RuntimeRegistryContext | null): ReturnType<typeof annotateItem> | null {
+  return item ? annotateItem({ ...item, slot: -1 }, context) : null;
 }

@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { getProtocolDecodeStatus, monitorProtocolDecode, type ProtocolClientLike } from '../src/services/protocol-decode-monitor.js';
 
 class FakeDecoder {
-  parsePacketBuffer(): unknown { throw Object.assign(new Error('Malformed packet body'), { name: 'PartialReadError' }); }
+  parsePacketBuffer(): unknown { throw Object.assign(new Error('Malformed packet body token=private-payload'), { name: 'PartialReadError' }); }
 }
 
 class FakeProtocolClient extends EventEmitter implements ProtocolClientLike {
@@ -22,6 +22,8 @@ test('decoder errors are recorded with packet metadata and rethrown, not swallow
   t.is(status.inventory, 'incomplete');
   t.is(status.issues[0]?.packetName, 'window_items');
   t.is(status.issues[0]?.packetId, 0x13);
+  t.is(status.issues[0]?.message, 'Partial packet read');
+  t.false(JSON.stringify(status).includes('private-payload'));
 });
 
 test('an unrelated recipe decode error is reported without invalidating inventory', (t) => {
@@ -37,7 +39,9 @@ test('a valid full inventory packet restores inventory snapshot reliability', (t
   const client = new FakeProtocolClient();
   monitorProtocolDecode(client);
   t.throws(() => client.deserializer.parsePacketBuffer(Buffer.from([0x15])), { name: 'PartialReadError' });
-  client.emit('packet', {}, { name: 'window_items' });
+  client.emit('packet', { windowId: 9 }, { name: 'window_items' });
+  t.is(getProtocolDecodeStatus(client).inventory, 'incomplete');
+  client.emit('packet', { windowId: 0 }, { name: 'window_items' });
   t.is(getProtocolDecodeStatus(client).inventory, 'complete');
 });
 

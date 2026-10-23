@@ -10,6 +10,8 @@ interface BotConfig {
   host: string;
   port: number;
   username: string;
+  profile?: 'processia-test';
+  connectionMode?: 'bot' | 'bridge-only' | 'auto';
 }
 
 interface ConnectionCallbacks {
@@ -25,9 +27,18 @@ export class BotConnection {
   private isReconnecting = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly reconnectDelayMs: number;
+  private lastKickReason: string | null = null;
 
   constructor(config: BotConfig, callbacks: ConnectionCallbacks, reconnectDelayMs = 2000) {
-    this.config = config;
+    const host = typeof config.host === 'string' ? config.host.trim() : '';
+    const username = typeof config.username === 'string' ? config.username.trim() : '';
+    if (!host || !username || !Number.isInteger(config.port) || config.port < 1 || config.port > 65535) {
+      throw new Error('explicit-minecraft-target-required: host, port, and username must be configured');
+    }
+    if (config.profile === 'processia-test' && (host !== '127.0.0.1' || config.port !== 25665 || username !== 'CodexBot')) {
+      throw new Error('processia-test-target-refused: expected 127.0.0.1:25665 as CodexBot');
+    }
+    this.config = { ...config, host, username };
     this.callbacks = callbacks;
     this.reconnectDelayMs = reconnectDelayMs;
   }
@@ -41,18 +52,52 @@ export class BotConnection {
   }
 
   getConfig(): BotConfig {
-    return this.config;
+    return { ...this.config };
   }
 
   isConnected(): boolean {
     return this.state === 'connected';
   }
 
+  getConnectionMode(): 'bot' | 'bridge-only' | 'auto' {
+    return this.config.connectionMode ?? 'bot';
+  }
+
+  getLastKickReason(): string | null { return this.lastKickReason; }
+
+  useBridgeOnlyMode(): void {
+    this.config.connectionMode = 'bridge-only';
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    const bot = this.bot;
+    this.bot = null;
+    this.state = 'disconnected';
+    if (bot) {
+      bot.removeAllListeners();
+      try { bot.quit('Switching to authenticated bridge-only mode'); } catch { /* Connection is already closing. */ }
+    }
+  }
+
+  async waitForConnected(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (this.isConnected()) return true;
+      if (this.state === 'disconnected') return false;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return this.isConnected();
+  }
+
   connect(): void {
+    if (this.getConnectionMode() === 'bridge-only') return;
     const botOptions = {
       host: this.config.host,
       port: this.config.port,
       username: this.config.username,
+      // minecraft-protocol otherwise logs parser stacks and, on trailing bytes,
+      // decoded packet contents plus the complete packet hex to stdout.
+      // Decode monitoring and BotConnection's stable error logger remain active.
+      hideErrors: true,
       plugins: { pathfinder },
     };
 
@@ -67,13 +112,13 @@ export class BotConnection {
   private registerEventHandlers(bot: mineflayer.Bot): void {
     bot.once('spawn', async () => {
       this.state = 'connected';
+      this.lastKickReason = null;
       this.callbacks.onLog('info', 'Bot spawned in world');
 
       const mcData = minecraftData(bot.version);
       const defaultMove = new Movements(bot, mcData);
       bot.pathfinder.setMovements(defaultMove);
 
-      bot.chat('LLM-powered bot ready to receive instructions!');
       this.callbacks.onLog('info', `Bot connected successfully. Username: ${this.config.username}, Server: ${this.config.host}:${this.config.port}`);
     });
 
@@ -83,16 +128,19 @@ export class BotConnection {
     });
 
     bot.on('kicked', (reason) => {
-      this.callbacks.onLog('error', `Bot was kicked from server: ${this.formatError(reason)}`);
+      this.lastKickReason = this.formatError(reason);
+      this.callbacks.onLog('error', 'Bot was kicked from the Minecraft server.');
       this.state = 'disconnected';
       bot.quit();
     });
 
     bot.on('error', (err) => {
       const errorCode = (err as { code?: string }).code || 'Unknown error';
-      const errorMsg = err instanceof Error ? err.message : String(err);
 
-      this.callbacks.onLog('error', `Bot error [${errorCode}]: ${errorMsg}`);
+      // Protocol/socket error text can contain server-controlled content. Keep only
+      // the stable transport code needed by local diagnostics.
+      const safeCode = /^[A-Z0-9_]{1,32}$/.test(errorCode) ? errorCode : 'MINECRAFT_ERROR';
+      this.callbacks.onLog('error', `Bot connection error [${safeCode}]`);
 
       if (errorCode === 'ECONNREFUSED' || errorCode === 'ETIMEDOUT') {
         this.state = 'disconnected';
@@ -103,8 +151,8 @@ export class BotConnection {
       this.callbacks.onLog('info', 'Bot logged in successfully');
     });
 
-    bot.on('end', (reason) => {
-      this.callbacks.onLog('info', `Bot disconnected: ${this.formatError(reason)}`);
+    bot.on('end', () => {
+      this.callbacks.onLog('info', 'Bot disconnected.');
 
       if (this.state === 'connected') {
         this.state = 'disconnected';
@@ -115,8 +163,8 @@ export class BotConnection {
           bot.removeAllListeners();
           this.bot = null;
           this.callbacks.onLog('info', 'Bot instance cleaned up after disconnect');
-        } catch (err) {
-          this.callbacks.onLog('warn', `Error cleaning up bot on end event: ${this.formatError(err)}`);
+        } catch {
+          this.callbacks.onLog('warn', 'Bot cleanup after disconnect failed.');
         }
       }
     });
@@ -141,8 +189,8 @@ export class BotConnection {
           this.bot.removeAllListeners();
           this.bot.quit('Reconnecting...');
           this.callbacks.onLog('info', 'Old bot instance cleaned up');
-        } catch (err) {
-          this.callbacks.onLog('warn', `Error while cleaning up old bot: ${this.formatError(err)}`);
+        } catch {
+          this.callbacks.onLog('warn', 'Old bot cleanup before reconnect failed.');
         }
       }
 
@@ -152,6 +200,9 @@ export class BotConnection {
   }
 
   async checkConnectionAndReconnect(): Promise<{ connected: boolean; message?: string }> {
+    if (this.getConnectionMode() === 'bridge-only') {
+      return { connected: false, message: 'bot-required: this tool requires a connected Minecraft player; the active mode is bridge-only.' };
+    }
     const currentState = this.state;
 
     if (currentState === 'disconnected') {
@@ -186,17 +237,32 @@ export class BotConnection {
     return { connected: true };
   }
 
-  cleanup(): void {
+  async cleanup(): Promise<void> {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
-    if (this.bot) {
+    const bot = this.bot;
+    if (!bot) return;
+
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        bot.removeListener('end', finish);
+        resolve();
+      };
+      const timeout = setTimeout(finish, 1_000);
+      bot.once('end', finish);
       try {
-        this.bot.quit('Server shutting down');
-      } catch (err) {
-        this.callbacks.onLog('warn', `Error during cleanup: ${this.formatError(err)}`);
+        bot.quit('Server shutting down');
+      } catch {
+        this.callbacks.onLog('warn', 'Bot cleanup failed; bounded shutdown continued.');
+        finish();
       }
-    }
+    });
   }
 
   private formatError(error: unknown): string {

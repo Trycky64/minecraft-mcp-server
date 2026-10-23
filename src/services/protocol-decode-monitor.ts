@@ -73,8 +73,10 @@ function instrumentDecoder(client: ProtocolClientLike, status: ProtocolDecodeSta
         protocolState,
         packetId,
         packetName: getPacketName(client.version, protocolState, packetId),
-        errorName: error instanceof Error ? error.name : 'UnknownError',
-        message: error instanceof Error && error.name === 'PartialReadError' ? error.message : 'Packet decode failed',
+        // Packet decoder messages can include server-controlled values. Expose only
+        // a stable class and fixed diagnostic; never retain packet text or payload.
+        errorName: error instanceof Error && error.name === 'PartialReadError' ? 'PartialReadError' : 'DecodeError',
+        message: error instanceof Error && error.name === 'PartialReadError' ? 'Partial packet read' : 'Packet decode failed',
         observedAt: new Date().toISOString(),
       };
       status.issues.push(issue);
@@ -93,8 +95,11 @@ export function monitorProtocolDecode(client: ProtocolClientLike): void {
   const status: ProtocolDecodeStatus = { inventory: 'unverified', issues: [] };
   monitors.set(client as object, status);
   client.on('packet', (...args: unknown[]) => {
+    const packet = args[0] as { windowId?: number } | undefined;
     const metadata = args[1] as PacketMetadata | undefined;
-    if (metadata?.name === 'window_items') status.inventory = 'complete';
+    // A container's full contents are not by themselves a complete player
+    // inventory snapshot. In 1.21.1 the player inventory is window 0.
+    if (metadata?.name === 'window_items' && packet?.windowId === 0) status.inventory = 'complete';
   });
   instrumentDecoder(client, status);
   if (client.setSerializer) {

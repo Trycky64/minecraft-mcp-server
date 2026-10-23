@@ -33,6 +33,19 @@ test('registerFurnaceTools registers smelt-item tool', (t) => {
   t.is(smeltCall!.args[1], 'Smelt items using a furnace-like block');
 });
 
+test('smelt-item rejects excessive quantities and timeouts before accessing the bot', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  registerFurnaceTools(factory, () => { throw new Error('gameplay handler must not run'); });
+  const handler = (mockServer.tool as sinon.SinonStub).getCalls().find((call) => call.args[0] === 'smelt-item')!.args[3] as (args: unknown) => Promise<{ content: { text: string }[]; isError?: boolean }>;
+  const args = { x: 1, y: 2, z: 3, inputItem: 'iron_ore', fuelItem: 'coal' };
+  const excessiveInput = await handler({ ...args, inputCount: 65 });
+  const excessiveTimeout = await handler({ ...args, timeoutMs: 120001 });
+  t.true(excessiveInput.isError);
+  t.true(excessiveTimeout.isError);
+});
+
 test('smelt-item returns error when no furnace block found', async (t) => {
   const mockServer = { tool: sinon.stub() } as unknown as McpServer;
   const mockConnection = {
@@ -112,7 +125,8 @@ test('smelt-item loads input and fuel and takes output', async (t) => {
     fuelItem: 'coal'
   });
 
-  t.true(result.content[0].text.includes('Smelted 1 iron_ingot'));
+  t.true(result.content[0].text.includes('output-observed-client-side'));
+  t.true(result.content[0].text.includes('serverConfirmed'));
   t.true((furnace.putInput as sinon.SinonStub).calledOnce);
   t.true((furnace.putFuel as sinon.SinonStub).calledOnce);
   t.true((furnace.takeOutput as sinon.SinonStub).calledOnce);

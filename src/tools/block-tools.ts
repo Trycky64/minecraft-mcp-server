@@ -12,6 +12,44 @@ type FaceDirection = 'up' | 'down' | 'north' | 'south' | 'east' | 'west';
 const MAX_FIND_BLOCKS_COUNT = 256;
 const MAX_FIND_BLOCKS_DISTANCE = 32;
 const MAX_SCANNED_BLOCKS = 150_000;
+const MAX_DIG_DISTANCE = 32;
+const DEFAULT_DIG_TIMEOUT_MS = 15_000;
+const MAX_DIG_TIMEOUT_MS = 30_000;
+const DIG_SETTLE_TICKS = 10;
+
+function inventoryCounts(bot: mineflayer.Bot): Map<number, number> {
+  const counts = new Map<number, number>();
+  for (const item of bot.inventory?.items?.() ?? []) counts.set(item.type, (counts.get(item.type) ?? 0) + item.count);
+  return counts;
+}
+
+function droppedItemsNear(bot: mineflayer.Bot, center: Vec3, excludedIds: Set<number>) {
+  return Object.values(bot.entities ?? {}).flatMap((entity) => {
+    if (excludedIds.has(entity.id) || entity.position.distanceTo(center) > 6) return [];
+    const item = entity.getDroppedItem?.();
+    return item ? [{ entityId: entity.id, rawNumericId: item.type, name: item.name, count: item.count }] : [];
+  });
+}
+
+async function withEmptyHand<T>(bot: mineflayer.Bot, action: () => Promise<T>): Promise<T> {
+  if (!bot.heldItem) return action();
+  const previousSlot = bot.quickBarSlot;
+  const start = bot.inventory.hotbarStart;
+  const emptySlot = bot.inventory.slots.findIndex((item, slot) => slot >= start && slot < start + 9 && item === null);
+  if (emptySlot < 0) throw new Error('dig-block-requires-an-empty-hotbar-slot-to-preserve-the-held-item');
+  let changedSlot = false;
+  try {
+    bot.setQuickBarSlot(emptySlot - start);
+    changedSlot = true;
+    await bot.waitForTicks(1);
+    return await action();
+  } finally {
+    if (changedSlot && bot.quickBarSlot !== previousSlot) {
+      bot.setQuickBarSlot(previousSlot);
+      await bot.waitForTicks(1);
+    }
+  }
+}
 
 interface FaceOption {
   direction: string;
@@ -31,9 +69,10 @@ export function registerBlockTools(
       y: z.coerce.number().describe("Y coordinate"),
       z: z.coerce.number().describe("Z coordinate"),
       faceDirection: z.enum(['up', 'down', 'north', 'south', 'east', 'west']).optional().describe("Direction to place against (default: 'down')"),
-      itemId: z.string().regex(/^[a-z0-9_.-]+:[a-z0-9/._-]+$/).optional().describe("Optional namespaced item to place; modded items require a runtime mapping for this session")
+      itemId: z.string().regex(/^[a-z0-9_.-]+:[a-z0-9/._-]+$/).optional().describe("Optional namespaced item to place; modded items require a runtime mapping for this session"),
+      timeoutMs: z.number().int().min(100).max(30_000).optional().describe('Maximum time for placement pathfinding (default 15 seconds, max 30 seconds)')
     },
-    async ({ x, y, z, faceDirection = 'down', itemId }: { x: number, y: number, z: number, faceDirection?: FaceDirection, itemId?: string }) => {
+    async ({ x, y, z, faceDirection = 'down', itemId, timeoutMs = 15_000 }: { x: number, y: number, z: number, faceDirection?: FaceDirection, itemId?: string, timeoutMs?: number }) => {
       ({ x, y, z } = coerceCoordinates(x, y, z));
 
       const bot = getBot();
@@ -55,6 +94,8 @@ export function registerBlockTools(
         if (!itemToPlace) {
           return factory.createErrorResponse(`Cannot place ${itemId}: no matching stack is present in the bot inventory`);
         }
+      } else if (bot.heldItem?.name === 'unknown') {
+        return factory.createErrorResponse(`Cannot safely place with unresolved held item ID ${bot.heldItem.type}; specify a namespaced item with an authoritative current-session mapping`);
       }
       const placePos = new Vec3(x, y, z).floored();
       ({ x, y, z } = placePos);
@@ -101,22 +142,32 @@ export function registerBlockTools(
           continue;
         }
         if (referenceBlock && referenceBlock.name !== 'air') {
+          const referenceStateId = referenceBlock.stateId;
           if (!bot.canSeeBlock(referenceBlock)) {
             const goal = new goals.GoalNear(referencePos.x, referencePos.y, referencePos.z, 2);
-            await bot.pathfinder.goto(goal);
+            await pathfindForPlacement(bot, goal, timeoutMs);
+          }
+
+          const currentTarget = bot.blockAt(placePos);
+          if (!currentTarget || currentTarget.name !== 'air' || currentTarget.stateId !== stateBeforePlacement) {
+            return factory.createErrorResponse(`Placement target changed while approaching (${x}, ${y}, ${z}); no placement packet was sent`);
+          }
+          const currentReference = bot.blockAt(referencePos);
+          if (!currentReference || currentReference.name === 'air' || currentReference.name === 'unknown' || currentReference.stateId !== referenceStateId) {
+            continue;
           }
 
           await bot.lookAt(placePos, true);
 
           try {
             if (itemToPlace && itemToPlace !== bot.heldItem) await bot.equip(itemToPlace, 'hand');
-            await bot.placeBlock(referenceBlock, face.vector.scaled(-1));
+            await bot.placeBlock(currentReference, face.vector.scaled(-1));
           } catch (placeError) {
             if (itemToPlace && previousHeldItem && bot.heldItem !== previousHeldItem) {
               try { await bot.equip(previousHeldItem, 'hand'); } catch { /* Keep the original placement failure visible. */ }
             }
-            log('warn', `Failed to place using ${face.direction} face: ${placeError}`);
-            continue;
+            log('warn', `Block placement attempt failed for face ${face.direction}.`);
+            return factory.createErrorResponse(`Placement attempt through ${face.direction} did not complete cleanly; no retry was sent because the server-side result may be uncertain: ${placeError instanceof Error ? placeError.message : String(placeError)}`);
           }
           const observed = bot.blockAt(placePos);
           const stateChanged = stateBeforePlacement !== undefined && observed?.stateId !== undefined && observed.stateId !== stateBeforePlacement;
@@ -124,15 +175,19 @@ export function registerBlockTools(
           const confirmed = observed !== null && observed !== undefined && (stateChanged || namedBlockObserved);
           if (itemToPlace && previousHeldItem && previousHeldItem !== itemToPlace) {
             try { await bot.equip(previousHeldItem, 'hand'); }
-            catch (restoreError) { log('warn', `Placed block but could not restore previous held item: ${restoreError}`); }
+            catch { log('warn', 'Block placement completed but hotbar restoration failed.'); }
           }
           if (!confirmed) {
             return factory.createErrorResponse(`Mineflayer accepted the placement request at (${x}, ${y}, ${z}), but the resulting block state was not confirmed in the loaded-world cache`);
           }
           if (observed.name === 'unknown') {
-            return factory.createResponse(`Placement confirmed at (${x}, ${y}, ${z}) by changed raw block state ID ${observed.stateId}; Mineflayer cannot resolve the resulting modded block name`);
+            return factory.createResponse(JSON.stringify({ status: 'placement-observed-client-cache', actionRequested: true, actionSent: true,
+              clientObserved: { x, y, z, rawStateId: observed.stateId }, serverConfirmed: false,
+              note: 'The resulting raw state changed in Mineflayer cache; the modded block name remains unresolved.' }));
           }
-          return factory.createResponse(`Placed block at (${x}, ${y}, ${z}) using ${face.direction} face`);
+          return factory.createResponse(JSON.stringify({ status: 'placement-observed-client-cache', actionRequested: true, actionSent: true,
+            clientObserved: { x, y, z, name: observed.name, rawStateId: observed.stateId, face: face.direction }, serverConfirmed: false,
+            note: 'The non-air block was observed in Mineflayer cache; no independent server-side confirmation was performed.' }));
         }
       }
 
@@ -144,18 +199,19 @@ export function registerBlockTools(
 
   factory.registerTool(
     "dig-block",
-    "Dig a block at the specified position",
+    "Dig a loaded block within 32 blocks with a bounded timeout and state confirmation",
     {
-      x: z.coerce.number().describe("X coordinate"),
-      y: z.coerce.number().describe("Y coordinate"),
-      z: z.coerce.number().describe("Z coordinate"),
+      x: z.coerce.number().finite().min(-30_000_000).max(30_000_000).describe("X coordinate"),
+      y: z.coerce.number().finite().min(-2048).max(2048).describe("Y coordinate"),
+      z: z.coerce.number().finite().min(-30_000_000).max(30_000_000).describe("Z coordinate"),
+      timeoutMs: z.number().int().min(100).max(MAX_DIG_TIMEOUT_MS).optional().describe("Maximum time for pathfinding or digging (default 15000ms, max 30000ms)"),
     },
-    async ({ x, y, z }) => {
+    async ({ x, y, z, timeoutMs = DEFAULT_DIG_TIMEOUT_MS }: { x: number; y: number; z: number; timeoutMs?: number }) => {
       ({ x, y, z } = coerceCoordinates(x, y, z));
 
       const bot = getBot();
       const blockPos = new Vec3(x, y, z);
-      const block = bot.blockAt(blockPos);
+      let block = bot.blockAt(blockPos);
 
       if (!block) {
         return factory.createResponse(`No block data loaded at position (${x}, ${y}, ${z}); chunk is not loaded`);
@@ -166,14 +222,107 @@ export function registerBlockTools(
       if (block.name === 'unknown') {
         return factory.createErrorResponse(`Cannot safely dig unresolved Mineflayer block at (${x}, ${y}, ${z}); raw state ID: ${block.stateId}`);
       }
+      if (bot.entity.position.distanceTo(block.position.offset(0.5, 0.5, 0.5)) > MAX_DIG_DISTANCE) {
+        return factory.createErrorResponse(`Dig target is too far; maximum distance is ${MAX_DIG_DISTANCE} blocks`);
+      }
+      const initialStateId = block.stateId;
+      const inventoryBefore = inventoryCounts(bot);
+      const droppedBefore = new Set(droppedItemsNear(bot, blockPos, new Set()).map((item) => item.entityId));
 
       if (!bot.canDigBlock(block) || !bot.canSeeBlock(block)) {
-        const goal = new goals.GoalNear(x, y, z, 2);
-        await bot.pathfinder.goto(goal);
+        const goal = new goals.GoalNear(x, y, z, 1);
+        const path = bot.pathfinder.goto(goal);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let timedOut = false;
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            timedOut = true;
+            reject(new Error(`Dig pathfinding timed out after ${timeoutMs}ms`));
+          }, timeoutMs);
+        });
+        try {
+          await Promise.race([path, timeout]);
+        } catch (error) {
+          if (timedOut) bot.pathfinder.stop();
+          path.catch(() => {});
+          throw error;
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+        block = bot.blockAt(blockPos);
+        if (!block || block.stateId !== initialStateId || block.name === 'air' || block.name === 'unknown') {
+          return factory.createErrorResponse('Dig target changed or became unresolved while pathfinding; no dig action was sent');
+        }
       }
 
-      await bot.dig(block);
-      return factory.createResponse(`Dug ${block.name} at (${x}, ${y}, ${z})`);
+      const canDigAfterApproach = bot.canDigBlock(block);
+      const canSeeAfterApproach = bot.canSeeBlock(block);
+      if (!canDigAfterApproach || !canSeeAfterApproach) {
+        const distance = bot.entity.position.distanceTo(block.position.offset(0.5, 0.5, 0.5));
+        return factory.createErrorResponse(JSON.stringify({
+          status: 'dig-not-sent',
+          reason: !canDigAfterApproach ? 'out-of-reach-or-not-diggable' : 'line-of-sight-obstructed',
+          canDigBlock: canDigAfterApproach,
+          canSeeBlock: canSeeAfterApproach,
+          distanceToBlockCenter: distance,
+          maxDigDistance: MAX_DIG_DISTANCE,
+          targetStateId: block.stateId,
+          position: { x: block.position.x, y: block.position.y, z: block.position.z },
+        }));
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let timedOut = false;
+      try {
+        await withEmptyHand(bot, async () => {
+          const dig = bot.dig(block);
+          const timeout = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => {
+              timedOut = true;
+          reject(new Error(`dig-timeout-result-uncertain-no-retry: stop-digging was sent after ${timeoutMs}ms; re-observe the target before any new dig request`));
+            }, timeoutMs);
+          });
+          try {
+            await Promise.race([dig, timeout]);
+          } catch (error) {
+            if (timedOut) bot.stopDigging();
+            dig.catch(() => {});
+            throw error;
+          }
+        });
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      const observed = bot.blockAt(blockPos);
+      if (!observed || observed.name !== 'air') {
+        return factory.createErrorResponse(`Dig request completed but the final block state was not confirmed as air at (${x}, ${y}, ${z})`);
+      }
+      await bot.waitForTicks(DIG_SETTLE_TICKS);
+      const inventoryAfter = inventoryCounts(bot);
+      const inventoryGains = [...inventoryAfter.entries()].flatMap(([rawNumericId, count]) => {
+        const gained = count - (inventoryBefore.get(rawNumericId) ?? 0);
+        if (gained <= 0) return [];
+        const item = bot.inventory?.items?.().find((candidate) => candidate.type === rawNumericId);
+        return [{ rawNumericId, count: gained, mineflayerName: item?.name ?? 'unknown', identity: item?.name === 'unknown' || !item ? 'unresolved' : 'mineflayer-name-only' }];
+      });
+      const nearbyDrops = droppedItemsNear(bot, blockPos, droppedBefore);
+      const dropObservation = nearbyDrops.length > 0
+        ? 'new-dropped-item-entity-observed'
+        : inventoryGains.length > 0
+          ? 'inventory-increase-observed-during-dig-window-source-not-independently-proven'
+          : 'no-drop-observed';
+      return factory.createResponse(JSON.stringify({
+        status: 'block-mined-observed-client-cache',
+        actionRequested: true,
+        actionSent: true,
+        clientObservedAir: true,
+        serverConfirmed: false,
+        block: { coordinates: { x, y, z }, mineflayerName: block.name, rawStateIdBefore: initialStateId, rawStateIdAfter: observed.stateId },
+        dropObservation,
+        dropEntities: nearbyDrops,
+        collectionStatus: inventoryGains.length > 0 ? 'inventory-increase-observed-client-side' : 'not-confirmed',
+        inventoryGains,
+        note: 'A mined block does not prove a drop was generated; only a new item entity or an inventory count increase is reported as observed.',
+      }, null, 2));
     }
   );
 
@@ -245,6 +394,10 @@ export function registerBlockTools(
         mineflayerNameReliable: block.name !== 'unknown',
         mineflayerNameConfidence: block.name !== 'unknown' ? 'version-static' : 'unresolved',
         mineflayerType: block.type ?? null,
+        diggable: block.diggable,
+        canDigBlock: (() => { try { return bot.canDigBlock(block); } catch { return null; } })(),
+        canSeeBlock: (() => { try { return bot.canSeeBlock(block); } catch { return null; } })(),
+        distanceToBlockCenter: (() => { try { return bot.entity.position.distanceTo(block.position.offset(0.5, 0.5, 0.5)); } catch { return null; } })(),
       };
       return factory.createResponse(`Found ${block.name} (type: ${block.type}) at position (${block.position.x}, ${block.position.y}, ${block.position.z})\nRegistry details (JSON):\n${JSON.stringify(details)}`);
     }
@@ -323,7 +476,12 @@ export function registerBlockTools(
       const searchConclusive = areaComplete && mappingConfidence === 'session-observed' && completeRuntimeStateCoverage;
       if (sorted.length === 0) {
         const status = searchConclusive ? 'not-found-in-loaded-area' : 'inconclusive';
-        return factory.createResponse(`${searchConclusive ? `No ${blockType} found` : `Search for ${blockType} inconclusive; no verified loaded match`} within ${boundedDistance} blocks\n${JSON.stringify({ status, reason: !areaComplete ? 'loaded-area-incomplete' : 'runtime-state-mapping-incomplete', mappingConfidence, requested: namespacedId, scanned, unloadedPositions, searchLimit: MAX_SCANNED_BLOCKS })}`);
+        const reason = !areaComplete
+          ? 'loaded-area-incomplete'
+          : searchConclusive
+            ? 'no-match-in-loaded-area'
+            : 'runtime-state-mapping-incomplete';
+        return factory.createResponse(`${searchConclusive ? `No ${blockType} found` : `Search for ${blockType} inconclusive; no verified loaded match`} within ${boundedDistance} blocks\n${JSON.stringify({ status, reason, mappingConfidence, requested: namespacedId, scanned, unloadedPositions, searchLimit: MAX_SCANNED_BLOCKS })}`);
       }
       const foundStatus = mappingConfidence === 'session-observed'
         ? (areaComplete ? 'found' : 'found-in-loaded-area-search-incomplete')
@@ -339,4 +497,26 @@ export function registerBlockTools(
       })}`);
     }
   );
+}
+
+async function pathfindForPlacement(bot: mineflayer.Bot, goal: InstanceType<typeof goals.GoalNear>, timeoutMs: number): Promise<void> {
+  const pathPromise = bot.pathfinder.goto(goal);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let timedOut = false;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      reject(new Error(`Placement pathfinding timed out after ${timeoutMs}ms; pathfinding was stopped and no placement packet was sent`));
+    }, timeoutMs);
+  });
+  try {
+    await Promise.race([pathPromise, timeoutPromise]);
+    if (timedOut) throw new Error(`Placement pathfinding timed out after ${timeoutMs}ms; pathfinding was stopped and no placement packet was sent`);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (timedOut) {
+      bot.pathfinder.stop();
+      pathPromise.catch(() => undefined);
+    }
+  }
 }

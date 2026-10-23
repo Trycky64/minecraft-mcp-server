@@ -63,6 +63,23 @@ test('find-entity returns entity when found', async (t) => {
   t.true(result.content[0].text.includes('8'));
 });
 
+test('find-entity exposes a dropped stack with raw ID and marks its name as unverified', async (t) => {
+  const server = { tool: sinon.stub() } as unknown as McpServer;
+  const connection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(server, connection);
+  const entity = {
+    id: 42, name: 'item', type: 'object', position: new Vec3(0.5, 64, 0.5),
+    getDroppedItem: () => ({ type: 1373, count: 1, name: 'unknown' }),
+  };
+  const bot = { entity: { position: new Vec3(0, 64, 0) }, nearestEntity: sinon.stub().returns(entity) } as unknown as mineflayer.Bot;
+  registerEntityTools(factory, () => bot);
+  const call = (server.tool as sinon.SinonStub).getCalls().find((entry) => entry.args[0] === 'find-entity')!;
+  const result = await call.args[3]({ type: 'item', maxDistance: 16 });
+  const data = JSON.parse(result.content[0]!.text.split('Entity details (JSON):\n')[1]!) as { droppedItem: { rawNumericId: number; identity: string } };
+  t.is(data.droppedItem.rawNumericId, 1373);
+  t.is(data.droppedItem.identity, 'unresolved');
+});
+
 test('find-entity returns not found when entity too far', async (t) => {
   const mockServer = {
     tool: sinon.stub()

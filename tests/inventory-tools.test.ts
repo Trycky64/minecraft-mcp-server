@@ -49,7 +49,7 @@ test('registerInventoryTools registers equip-item tool', (t) => {
   t.is(equipItemCall!.args[1], 'Equip a specific item');
 });
 
-test('list-inventory returns empty when no items', async (t) => {
+test('list-inventory does not call an unverified local snapshot empty', async (t) => {
   const mockServer = {
     tool: sinon.stub()
   } as unknown as McpServer;
@@ -73,7 +73,21 @@ test('list-inventory returns empty when no items', async (t) => {
 
   const result = await executor({});
 
-  t.true(result.content[0].text.includes('empty'));
+  t.true(result.content[0].text.includes('not verified'));
+});
+
+test('list-inventory reports empty only after a full player window snapshot', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  const protocol = Object.assign(new EventEmitter(), { state: 'play', version: '1.21.1' });
+  monitorProtocolDecode(protocol);
+  protocol.emit('packet', { windowId: 0 }, { name: 'window_items' });
+  const mockBot = { _client: protocol, inventory: { items: () => [], slots: [] } } as unknown as mineflayer.Bot;
+  registerInventoryTools(factory, () => mockBot);
+  const call = (mockServer.tool as sinon.SinonStub).getCalls().find(item => item.args[0] === 'list-inventory')!;
+  const result = await call.args[3]({});
+  t.true(result.content[0].text.includes('Inventory is empty'));
 });
 
 test('list-inventory returns items with counts', async (t) => {
@@ -155,22 +169,26 @@ test('list-inventory separates observed numeric IDs from static vanilla candidat
   t.deepEqual(details.items[0].components, { custom: 'test' });
 });
 
-test('list-inventory preserves unknown modded item IDs without inventing a name', async (t) => {
+test('raw item ID 1373 remains unresolved without runtime provenance and is never given an invented name', async (t) => {
   const mockServer = { tool: sinon.stub() } as unknown as McpServer;
   const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
   const factory = new ToolFactory(mockServer, mockConnection);
   const mockBot = {
     version: '1.21.1', protocolVersion: '1.21.1',
-    inventory: { items: () => [{ name: 'unknown', type: 999999, count: 1, slot: 4 }] },
+    inventory: { items: () => [{ name: 'unknown', type: 1373, count: 1, slot: 4 }] },
   } as unknown as mineflayer.Bot;
   const runtime = new RuntimeRegistryService({ getBot: () => mockBot, isConnected: () => true, getConfig: () => ({ host: 'localhost', port: 25565 }) });
   registerInventoryTools(factory, () => mockBot, () => runtime.getContext());
   const call = (mockServer.tool as sinon.SinonStub).getCalls().find((item) => item.args[0] === 'list-inventory')!;
   const result = await call.args[3]({});
   const details = JSON.parse(result.content[0].text.split('Registry details (JSON):\n')[1]);
-  t.is(details.items[0].rawNumericId, 999999);
+  t.is(details.items[0].rawNumericId, 1373);
   t.is(details.items[0].namespacedId, null);
   t.is(details.items[0].resolutionStatus, 'unresolved');
+  t.is(details.items[0].provenance, null);
+  t.is(details.items[0].identityConfidence, 'unresolved');
+  t.is(details.items[0].staticCandidate, null);
+  t.false(details.items[0].runtimeNumericIdVerified);
   t.false(details.items[0].mineflayerNameReliable);
 });
 
@@ -203,8 +221,10 @@ test('equip-item calls bot.equip', async (t) => {
   const result = await executor({ itemName: 'diamond_sword', destination: 'hand' });
 
   t.true(equipStub.calledOnce);
-  t.true(result.content[0].text.includes('Equipped'));
-  t.true(result.content[0].text.includes('diamond_sword'));
+  const data = JSON.parse(result.content[0].text) as { status: string; serverConfirmed: boolean; item: { mineflayerName: string } };
+  t.is(data.status, 'uncertain');
+  t.false(data.serverConfirmed);
+  t.is(data.item.mineflayerName, 'diamond_sword');
 });
 
 test('equip-item returns message when item not found', async (t) => {

@@ -3,6 +3,7 @@ import sinon from 'sinon';
 import { ToolFactory } from '../src/tool-factory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { BotConnection } from '../src/bot-connection.js';
+import { BridgeAdapterError } from '../src/bridge/bridge-adapter-contract.js';
 
 test('createResponse returns proper MCP response format', (t) => {
   const mockServer = {} as McpServer;
@@ -38,7 +39,8 @@ test('createErrorResponse with Error object', (t) => {
   
   t.deepEqual(response, {
     content: [{ type: 'text', text: 'Failed: Connection timeout' }],
-    isError: true
+    isError: true,
+    _meta: { diagnostic: { code: 'operation-timeout', category: 'timeout', retryable: false, temporary: true, sessionInvalidated: null } },
   });
 });
 
@@ -51,8 +53,29 @@ test('createErrorResponse with string', (t) => {
   
   t.deepEqual(response, {
     content: [{ type: 'text', text: 'Failed: Invalid argument' }],
-    isError: true
+    isError: true,
+    _meta: { diagnostic: { code: 'operation-failed', category: 'operation', retryable: false, temporary: null, sessionInvalidated: null } },
   });
+});
+
+test('public tool errors redact secret-shaped text and remove control characters', (t) => {
+  const factory = new ToolFactory({} as McpServer, {} as BotConnection);
+  const response = factory.createErrorResponse(new Error('bridge failed\nAuthorization: Bearer private-token secret=private-token'));
+  const text = response.content[0]!.text;
+  t.false(text.includes('private-token'));
+  t.false(text.includes('\n'));
+  t.true(text.includes('[redacted]'));
+  t.true(response.isError);
+  t.deepEqual(response._meta, { diagnostic: { code: 'operation-failed', category: 'operation', retryable: false, temporary: null, sessionInvalidated: null } });
+});
+
+test('bridge tool errors expose only stable codes, never adapter diagnostics', (t) => {
+  const factory = new ToolFactory({} as McpServer, {} as BotConnection);
+  const secret = 'diagnostic-secret-that-must-not-be-returned';
+  const response = factory.createErrorResponse(new BridgeAdapterError('authentication-refused', secret));
+  t.is(response.content[0]!.text, 'Failed: authentication-refused');
+  t.deepEqual(response._meta, { diagnostic: { code: 'authentication-refused', category: 'authentication', retryable: false, temporary: false, sessionInvalidated: true } });
+  t.false(JSON.stringify(response).includes(secret));
 });
 
 test('createErrorResponse includes isError flag', (t) => {
@@ -125,7 +148,8 @@ test('registerTool executor returns error when not connected', async (t) => {
   
   t.deepEqual(response, {
     content: [{ type: 'text', text: 'Bot is not connected' }],
-    isError: true
+    isError: true,
+    _meta: { diagnostic: { code: 'minecraft-session-unavailable', category: 'connection', retryable: true, temporary: true, sessionInvalidated: null } },
   });
   t.true((executor as sinon.SinonStub).notCalled);
 });
@@ -189,6 +213,7 @@ test('registerTool executor catches and returns error response on exception', as
   
   t.deepEqual(response, {
     content: [{ type: 'text', text: 'Failed: Execution failed' }],
-    isError: true
+    isError: true,
+    _meta: { diagnostic: { code: 'operation-failed', category: 'operation', retryable: false, temporary: null, sessionInvalidated: null } },
   });
 });

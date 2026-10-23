@@ -44,7 +44,7 @@ test('registerPositionTools registers move-to-position tool', (t) => {
   const moveToPositionCall = toolCalls.find(call => call.args[0] === 'move-to-position');
 
   t.truthy(moveToPositionCall);
-  t.is(moveToPositionCall!.args[1], 'Move the bot to a specific position');
+  t.is(moveToPositionCall!.args[1], 'Move the bot to a nearby position with a bounded path and timeout');
 });
 
 test('get-position returns current bot position', async (t) => {
@@ -102,10 +102,26 @@ test('move-to-position returns error when pathfinding fails', async (t) => {
   const moveToPositionCall = toolCalls.find(call => call.args[0] === 'move-to-position');
   const executor = moveToPositionCall!.args[3];
 
-  const result = await executor({ x: 100, y: 64, z: 200 });
+  const result = await executor({ x: 40, y: 64, z: 60 });
 
   t.true(result.isError);
   t.true(result.content[0].text.includes('Cannot find path'));
+});
+
+test('move-to-position rejects targets beyond its bounded path distance', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  const mockBot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    pathfinder: { goto: sinon.stub().resolves(), stop: sinon.stub() },
+  } as Partial<mineflayer.Bot>;
+  registerPositionTools(factory, () => mockBot as mineflayer.Bot);
+  const call = (mockServer.tool as sinon.SinonStub).getCalls().find(item => item.args[0] === 'move-to-position')!;
+  const result = await call.args[3]({ x: 257, y: 64, z: 0 });
+  t.true(result.isError);
+  t.true(result.content[0].text.includes('maximum path distance is 64'));
+  t.false((mockBot.pathfinder!.goto as sinon.SinonStub).called);
 });
 
 test.serial('move-to-position returns timeout error and stops pathfinder', async (t) => {
@@ -139,7 +155,7 @@ test.serial('move-to-position returns timeout error and stops pathfinder', async
   const result = await resultPromise;
 
   t.true(result.isError);
-  t.true(result.content[0].text.includes('Move timed out after 1000ms'));
+  t.true(result.content[0].text.includes('move-timeout-result-uncertain'));
   t.true((mockBot.pathfinder!.stop as sinon.SinonStub).calledOnce);
 });
 
@@ -169,7 +185,7 @@ test('move-to-position succeeds without timeout and does not stop pathfinder', a
   const result = await executor({ x: 100, y: 64, z: 200 });
 
   t.falsy(result.isError);
-  t.true(result.content[0].text.includes('Successfully moved'));
+  t.true(result.content[0].text.includes('movement-observed-client-side'));
   t.true((mockBot.pathfinder!.stop as sinon.SinonStub).notCalled);
 });
 
@@ -203,7 +219,7 @@ test.serial('move-to-position succeeds before timeout and does not stop pathfind
   await clock.tickAsync(1000);
 
   t.falsy(result.isError);
-  t.true(result.content[0].text.includes('Successfully moved'));
+  t.true(result.content[0].text.includes('movement-observed-client-side'));
   t.true((mockBot.pathfinder!.stop as sinon.SinonStub).notCalled);
 });
 

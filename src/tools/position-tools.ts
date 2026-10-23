@@ -7,6 +7,10 @@ import { ToolFactory } from '../tool-factory.js';
 import { coerceCoordinates } from './coordinate-utils.js';
 
 type Direction = 'forward' | 'back' | 'left' | 'right';
+const MAX_MOVE_DISTANCE = 64;
+const DEFAULT_MOVE_TIMEOUT_MS = 15_000;
+const MAX_MOVE_TIMEOUT_MS = 30_000;
+const MAX_DIRECTION_MOVE_MS = 5_000;
 
 export function registerPositionTools(factory: ToolFactory, getBot: () => mineflayer.Bot): void {
   factory.registerTool(
@@ -27,44 +31,45 @@ export function registerPositionTools(factory: ToolFactory, getBot: () => minefl
 
   factory.registerTool(
     "move-to-position",
-    "Move the bot to a specific position",
+    "Move the bot to a nearby position with a bounded path and timeout",
     {
-      x: z.coerce.number().describe("X coordinate"),
-      y: z.coerce.number().describe("Y coordinate"),
-      z: z.coerce.number().describe("Z coordinate"),
-      range: z.coerce.number().finite().optional().describe("How close to get to the target (default: 1)"),
-      timeoutMs: z.number().int().min(50).optional().describe("Timeout in milliseconds before cancelling (min: 50, default: no timeout)")
+      x: z.coerce.number().finite().min(-30_000_000).max(30_000_000).describe("X coordinate"),
+      y: z.coerce.number().finite().min(-2048).max(2048).describe("Y coordinate"),
+      z: z.coerce.number().finite().min(-30_000_000).max(30_000_000).describe("Z coordinate"),
+      range: z.coerce.number().finite().min(0).max(8).optional().describe("How close to get to the target (default: 1, max: 8)"),
+      timeoutMs: z.number().int().min(50).max(MAX_MOVE_TIMEOUT_MS).optional().describe("Timeout in milliseconds (default: 15000, max: 30000)")
     },
-    async ({ x, y, z, range = 1, timeoutMs }: { x: number; y: number; z: number; range?: number; timeoutMs?: number }) => {
+    async ({ x, y, z, range = 1, timeoutMs = DEFAULT_MOVE_TIMEOUT_MS }: { x: number; y: number; z: number; range?: number; timeoutMs?: number }) => {
       ({ x, y, z } = coerceCoordinates(x, y, z));
 
       const bot = getBot();
+      if (bot.entity?.position && bot.entity.position.distanceTo(new Vec3(x, y, z)) > MAX_MOVE_DISTANCE) {
+        return factory.createErrorResponse(`Move target is too far; maximum path distance is ${MAX_MOVE_DISTANCE} blocks`);
+      }
       const goal = new goals.GoalNear(x, y, z, range);
       let timeoutId: ReturnType<typeof setTimeout> | null = null;
       let timeoutPromise: Promise<never> | null = null;
       let timedOut = false;
 
-      if (timeoutMs !== undefined) {
-        timeoutPromise = new Promise((_, reject) => {
-          timeoutId = setTimeout(() => {
-            timedOut = true;
-            reject(new Error(`Move timed out after ${timeoutMs}ms`));
-          }, timeoutMs);
-        });
-      }
+      timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          timedOut = true;
+          reject(new Error(`move-timeout-result-uncertain: pathfinder stop requested after ${timeoutMs}ms; inspect the current position before retrying`));
+        }, timeoutMs);
+      });
 
       const gotoPromise = bot.pathfinder.goto(goal);
 
       try {
-        if (timeoutPromise) {
-          await Promise.race([gotoPromise, timeoutPromise]);
-        } else {
-          await gotoPromise;
-        }
-        return factory.createResponse(`Successfully moved to position near (${x}, ${y}, ${z})`);
+        await Promise.race([gotoPromise, timeoutPromise]);
+        const position = bot.entity?.position;
+        return factory.createResponse(JSON.stringify({ status: 'movement-observed-client-side', actionRequested: true, actionSent: true,
+          target: { x, y, z }, currentPosition: position ? { x: position.x, y: position.y, z: position.z } : null,
+          pathfinderCompleted: true, serverConfirmed: false,
+          note: 'Mineflayer pathfinder completed and the player position was read from the client entity state.' }));
       } catch (error) {
         if (timedOut) {
-          throw new Error(`Move timed out after ${timeoutMs}ms`);
+          throw new Error(`move-timeout-result-uncertain: pathfinder stop requested after ${timeoutMs}ms; inspect the current position before retrying`);
         }
         throw error;
       } finally {
@@ -91,6 +96,9 @@ export function registerPositionTools(factory: ToolFactory, getBot: () => minefl
       ({ x, y, z } = coerceCoordinates(x, y, z));
 
       const bot = getBot();
+      if (bot.entity?.position && bot.entity.position.distanceTo(new Vec3(x, y, z)) > MAX_MOVE_DISTANCE) {
+        return factory.createErrorResponse(`Look target is too far; maximum distance is ${MAX_MOVE_DISTANCE} blocks`);
+      }
       await bot.lookAt(new Vec3(x, y, z), true);
       return factory.createResponse(`Looking at position (${x}, ${y}, ${z})`);
     }
@@ -113,17 +121,17 @@ export function registerPositionTools(factory: ToolFactory, getBot: () => minefl
     "Move the bot in a specific direction for a duration",
     {
       direction: z.enum(['forward', 'back', 'left', 'right']).describe("Direction to move"),
-      duration: z.number().optional().describe("Duration in milliseconds (default: 1000)")
+      duration: z.number().int().min(50).max(MAX_DIRECTION_MOVE_MS).optional().describe("Duration in milliseconds (default: 1000, max: 5000)")
     },
     async ({ direction, duration = 1000 }: { direction: Direction, duration?: number }) => {
       const bot = getBot();
-      return new Promise((resolve) => {
-        bot.setControlState(direction, true);
-        setTimeout(() => {
-          bot.setControlState(direction, false);
-          resolve(factory.createResponse(`Moved ${direction} for ${duration}ms`));
-        }, duration);
-      });
+      bot.setControlState(direction, true);
+      try {
+        await new Promise(resolve => setTimeout(resolve, duration));
+      } finally {
+        bot.setControlState(direction, false);
+      }
+      return factory.createResponse(`Moved ${direction} for ${duration}ms`);
     }
   );
 }

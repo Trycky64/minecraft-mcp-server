@@ -1,5 +1,7 @@
 # Universal Minecraft MCP Server — working report
 
+> **Historical audit and implementation log.** Statements below describe the dates and worktree snapshots they name; they are not the current release verdict. The current tested dependency set, runtime matrix and limitations are in [RELEASE_READINESS.md](RELEASE_READINESS.md) and [MISSION7_FINAL_REPORT.md](MISSION7_FINAL_REPORT.md).
+
 This report is maintained during the universalization work. It distinguishes inspected facts from implementation goals and unrun scenarios.
 
 ## Initial audit (2026-10-14)
@@ -162,3 +164,82 @@ The following captures the state before the user authorized writing `eula=true`;
 - MCP `npm run build`: PASS; `npm test`: PASS, 210/210; `npm run lint`: PASS; `git diff --check`: PASS in both repositories.
 - Processia generic bridge `./gradlew -p neoforge-bridge test --rerun-tasks --no-daemon --max-workers=1 --console=plain`: PASS, 5 JUnit tests executed freshly (4 `BridgeSessionsTest`, 1 `BridgeSettingsTest`), no failures/errors/skips. Java compilation reports only a deprecation note in `GenericBlockInspector`.
 - No dependency or lockfile was changed. Neither repository received a commit or push. Existing MCP genericization work, ignored `todo.txt`, and Processia `gradlew` executable-bit change were preserved.
+## Mission 4 — Windows runtime preparation (2026-10-14)
+
+- Verified the MCP repository is on `feature/processia-integration` at `8c50ee5` and Processia is on `master` at `d4c217c`; both were clean at the start. No remotes or client MCP configurations were changed.
+- Detected Windows 11/PowerShell, Temurin Java `21.0.12.1`, Node `v26.8.1`, npm `11.19.0`, and Git `2.55.0.windows.5`.
+- Reinstalled MCP dependencies with `npm ci` from the existing lockfile. Build passed, 210/210 tests passed, and lint passed. npm reported 37 audit findings in the locked dependency tree; no fix was applied.
+- Processia root build passed with the Windows wrapper and one worker. The generic bridge build passed on Windows with five JUnit tests.
+- Found that credential file handling used POSIX-only attributes and failed on Windows. Added an owner-only Windows ACL implementation and platform-conditional regression assertion. Unsupported filesystems fail closed. The Windows bridge build/test verified this path.
+- Created a user-ACL-protected test root at `C:\Users\qperr\minecraft-mcp-test`, prepared vanilla and three independent NeoForge 21.1.259 installations, and copied the Processia and generic bridge jars to their isolated profiles. The third-party profile is staged but has no third-party mod jar pending exact release review.
+- Downloaded official Minecraft/NeoForge setup artifacts into that test root. Server properties are loopback-only on `25665`; the bridge uses `25677`. Both ports were free before and after setup. Port `25565` was not queried or contacted.
+- No server was started, no EULA file was created/accepted, no world was generated, and no runtime capability claim was added. See `docs/WINDOWS_RUNTIME_TEST_SETUP.md` for paths, commands and the next-mission checklist.
+
+## Mission 5 — Windows runtime validation preflight (2026-10-14)
+
+- Re-audited both worktrees and retained all pre-existing modifications. MCP remains on `feature/processia-integration`; Processia remains on `master`. No source code, dependencies, remotes, or commits were changed in this mission segment.
+- Re-ran reference checks: MCP build/lint PASS and 210/210 tests PASS; Processia build PASS and forced tests PASS (18 tests); standalone bridge build PASS and forced tests PASS (5 tests). Combined automated result: 233 passed, 0 failed. Full command logs are under `C:\Users\qperr\minecraft-mcp-test\logs\mission5-*.log`.
+- Verified the four isolated Windows profiles remain configured for loopback and do not have `eula.txt` files or generated worlds. Ports `25665` and `25677` had no listeners. The Windows start script refuses to launch without a manually present `eula=true`; no server was started and port `25565` was not queried.
+- Selected and staged Mekanism `10.7.15.81` from its official Modrinth distribution. The version metadata identifies Minecraft 1.21.1 and NeoForge, labels the release Release, lists only optional dependencies, and the downloaded file's SHA-512 matched the API metadata. The stated NeoForge minimum is 21.1.194, below the target 21.1.259. This is preparation only; the mod has not been loaded.
+- Source inspection confirms Processia's generator/crusher/press/wiremill provide ItemHandler, M2 machines and the energy cable provide EnergyStorage, and Processia does not register FluidHandler. A positive fluid test needs a third-party or test fixture provider.
+- Runtime matrix remains BLOCKED pending the user's explicit confirmation that they have read and accepted Minecraft's EULA. See [`WINDOWS_RUNTIME_TEST_REPORT.md`](WINDOWS_RUNTIME_TEST_REPORT.md) and [`WINDOWS_RUNTIME_TEST_SETUP.md`](WINDOWS_RUNTIME_TEST_SETUP.md). No `eula.txt`, credential, or world was created.
+
+## Mission 5 — runtime results after EULA confirmation (2026-10-14)
+
+The user explicitly confirmed EULA acceptance and confirmed `eula=true` in all four isolated profiles. This section supersedes the preflight-only runtime status above.
+
+- Vanilla server/MCP PASS: protocol 767, vanilla tools remained available with the bridge disabled, and loaded block/inventory/search responses were structurally valid.
+- Generic NeoForge PASS: `minecraft_mcp_bridge` loaded without Processia, bound only to `127.0.0.1:25677`, completed authenticated MCP handshake/registry refresh, exposed complete runtime registries, and inspected vanilla BlockEntities and capabilities. No-auth/wrong-secret requests returned 401; credentials were owner-only and removed at normal shutdown.
+- Processia PASS: Processia `0.1.0` and both bridge implementations loaded on NeoForge `21.1.259`. Runtime registry IDs were discovered, not hard-coded: M2 block IDs ranged from `processia:coal_generator` 1066 through `processia:energy_cable` 1071; the observed crusher item ID was 1341. A complete bounded machine search found six M2 blocks, and individual MCP inspection returned their BlockEntities, states and properties. The Processia adapter returned all 11 recipes.
+- Positive capability observations: Processia crusher ItemHandler exposed two raw iron; the generator exposed non-zero FE (`7,960/10,000` at one observation); Mekanism's real basic energy cube exposed `1,600,000 FE` capacity and its real basic fluid tank exposed an available `32,000 mB` FluidHandler. The tank was empty; no non-empty fluid amount was claimed.
+- Mekanism loaded successfully and its generic bridge exposed 1,260 block entries including 60 Mekanism machine blocks. Mineflayer could not join this server: NeoForge required a NeoForge 21.1.259 client. Consequently the TypeScript MCP bridge integration failed closed for this modpack, although direct authenticated bridge inspection succeeded.
+- Restart PASS: the isolated third-party server produced a new server identity and registry epoch; an old expected identity was rejected. Closed sessions and missing authentication were rejected, and unloaded chunks/out-of-range coordinates returned structured errors.
+- Placement PASS for adjacent targets: MCP placed a Processia basic battery and the bridge read it back with a present BlockEntity, state ID 26729 and `facing=up`. A farther action in a multi-placement sequence timed out during pathfinding; it did not produce a false success. Long-distance pathfinding remains a limitation.
+- Runtime logs and request/result evidence are retained outside the repositories under `C:\Users\qperr\minecraft-mcp-test\logs`. All test servers were stopped normally, their ephemeral credentials were removed, and test ports were released. Neither the personal server nor port 25565 was contacted or checked.
+- Two runtime-driven MCP fixes were made: `find-blocks` now uses `no-match-in-loaded-area` for a complete, session-observed no-match, and MCP shutdown waits (bounded to one second) for Mineflayer's `end` event. Unit regressions cover both.
+- Final mission verdict remains **PARTIAL**: a non-empty third-party fluid tank and MCP-through-Mineflayer operation against Mekanism remain unvalidated because the modpack requires a NeoForge client that Mineflayer does not provide. See [`WINDOWS_RUNTIME_TEST_REPORT.md`](WINDOWS_RUNTIME_TEST_REPORT.md) for exact evidence, logs and the scenario matrix.
+
+## Mission 6 status override (2026-10-14)
+
+The preceding Mission 5 verdict and “remaining work” bullets are historical snapshots. Mission 6 later validated an authenticated MCP bridge-only session against Mekanism and read a non-empty `minecraft:water` FluidHandler (1,000/32,000 mB) after a test-only fixture filled the isolated test-world tank. It also validated `auto` fallback using the status ping's modded marker and an authenticated bridge handshake. A first exploratory probe had an invalid overlong player name; that generic decode error was shown to be ambiguous and is not used by fallback logic. Mission 6 also added bounded placement path cancellation. Current evidence and limitations are summarized in [`MISSION6_RUNTIME_REPORT.md`](MISSION6_RUNTIME_REPORT.md). The placement timeout is regression-tested but was not staged as a new runtime placement mutation in Mission 6. Targeted SDK and compatible transitive fixes reduced the npm audit to 17 findings, including 8 production-chain findings that would require incompatible protocol/authentication major changes to remove.
+
+
+## Mission gameplay survie via fork local - 2026-10-20
+
+### Matrice des capacites constatees
+
+| Capacite | Etat | Chemin effectif / limite |
+|---|---|---|
+| Deplacement et orientation | PASS | `move-to-position` (Pathfinder), `move-in-direction`, `look-at`, `jump`. Le test runtime en Survie a confirme le changement de position serveur. Chemins maintenant limites a 256 blocs, duree 15 s par defaut / 60 s max; mouvements directionnels 5 s max. |
+| Observation blocs et entites | PARTIAL | `get-block-info`, `find-blocks` (chunks deja charges, recherche bornee) et `find-entity`. Les candidats vanilla sur NeoForge restent des noms statiques non autoritaires; pas de loading de chunk. |
+| Minage | PARTIAL | `dig-block` emet le vrai protocole Mineflayer, refuse `unknown`, limite la distance a 32 blocs, timeouts, revalide le state ID apres pathfinding et confirme air en cache. Non execute en runtime durant cette mission. |
+| Ramassage | PARTIAL | Minecraft ramasse normalement les drops quand le joueur les touche; `list-inventory` permet le controle. Aucun outil dedie d'approche/attente d'un drop n'est expose. |
+| Inventaire/equipement | PARTIAL | `list-inventory`, `find-item`, `equip-item`. Le runtime conserve la pile preexistante raw ID 1373 comme `unknown`; aucune cle ne peut etre deduite. |
+| Crafting | PARTIAL | `list-recipes`, `get-recipe`, `can-craft`, `craft-item` utilisent les recettes statiques Mineflayer et les clics de recettes normaux cote serveur; `smelt-item` couvre les fours vanilla. Les recettes de machines Processia ne sont pas des recettes de craft Mineflayer. |
+| Placement | PARTIAL | `place-block` utilise le vrai paquet placement, mapping de pile moddee autoritatif lorsqu'un nom est fourni, timeout et verification de changement d'etat. Aucun placement n'a ete execute. |
+| Interaction bloc/machine | PARTIAL | Nouvel outil `interact-block`: use-on-block normal, limite de portee 4.5, chunk charge, state ID observe et epoch courant requis, main vide temporaire. Une machine moddee reste impossible a identifier sans mapping/bridge, mais un GUI Mineflayer n'est pas une condition protocolaire. |
+| GUI / conteneurs | PARTIAL | Nouveaux `inspect-open-window`, `click-window-slot`, `close-open-window` utilisent l'API fenetre Mineflayer et les paquets normaux; les clics sont attendus/validees par le serveur. Les tests unitaires couvrent aussi les IDs bruts `unknown`. Pas de capture framebuffer, rendu, tooltip ou preuve d'ouverture de conteneur runtime. |
+
+### Actions runtime observees
+
+Le serveur existant de `C:/Users/qperr/minecraft-mcp-test/neoforge-processia` est reste sur `127.0.0.1:25665`, monde `world`, PID Java 23780. Minecraft 1.21.1 / protocole 767 / NeoForge 21.1.259 / Processia 0.1.0. Aucune connexion au port 25565, commande administrative, reset ou redemarrage serveur.
+
+Le fork local a ete lance par stdio avec `dist/main.js --host 127.0.0.1 --port 25665 --username CodexBot`. Mineflayer a rapporte Survie. Deplacement confirme: `(20,104,-15)` vers `(21,104,-15)` via `move-to-position` (range 0.25, timeout 10 000 ms); `get-position` relu apres l'action et confirme la nouvelle position. Le support et le volume cible avaient ete lus avant l'action; aucun bloc n'a ete modifie.
+
+Le nouveau `interact-block` a ete exerce sur la case air du joueur avec le state ID brut observe 0 et main vide. Le serveur n'a ouvert aucun menu; le retour indiquait `interaction-sent-no-menu-observed`, l'etat est reste 0 et la pile inconnue est restee identique. Cela valide le chemin d'envoi d'interaction, pas un conteneur ou menu de machine.
+
+### Diagnostic runtime
+
+- `rawNumericId=1373`, `unknown`, aucun namespace, provenance ou mapping de session. `registry-status` n'a que minecraft-data statique; `runtimeNumericIdVerified=false`. Le bridge est desactive/non authentifie. L'identite de cet item n'est pas resolue et aucune modification de registre n'a ete faite.
+- `declare_recipes`, paquet clientbound 119 (protocol 767), `PartialReadError`: `Missing characters in string, found size is 112028 expected size was 420784383`. L'inventaire de la meme connexion est `complete`, sans erreurs `window_items`/`set_slot`; le bot reste connecte. Le decoder enregistre/reemet l'erreur et ne la transforme pas en inventaire vide. Cause exacte non prouvee; aucune dependance/schema n'a ete change.
+- Versions installees: Mineflayer 4.39.0, minecraft-protocol 1.68.0, minecraft-data 3.117.0. Ces versions correspondent au lock existant; cette mission n'a pas modifie package.json/lockfile.
+- L'absence d'un client graphique instrumente ne bloque pas l'envoi de `use_on`, la reception de `open_window`/slots ni `clickWindow` au niveau protocole. Elle bloque toujours les captures, tooltips et verdicts de rendu. Le bridge NeoForge desactive empeche l'inspection FE/fluides, les mappings moddes autoritaires et la liste des recettes de machines.
+
+### Implementations et validations de cette mission
+
+Nouveaux outils: `interact-block`, `inspect-open-window`, `click-window-slot`, `close-open-window`. Les actions de fenetre exigent l epoch courant et refusent les appels obsoletes apres reconnexion. Durcissements: limites coordinates, distance/timeout pour mouvement; timeout directionnel; recherche d'entites plafonnee a 128 blocs; minage borne, annule au timeout, revalide et verifie l'etat final; placement refuse une pile held `unknown`.
+
+Build PASS (`npm run build`), AVA **244/244 PASS** (`npm test`), lint PASS, `git diff --check` PASS. Aucun dependency/lockfile change par cette mission. Les GUI menus de machines, recipes M2, minage/ramassage/crafting/placement et progression V0.2 n'ont pas ete valides en runtime. Verdict survie: PARTIAL; prochaine gate: activer et authentifier le bridge dans le profil de test existant, resoudre les mappings dans l'epoch courant, puis obtenir/inspecter un bloc machine deja present ou une fixture de gameplay autorisee avant d'executer des recettes et transferts normaux.
+
+
+Runtime final apres recompilation: nouvelle session `session:e628157d-5aac-44c2-be95-9e59fc18e8e7`; `interact-block` a accepte l epoch courant sur air state 0 a (21,104,-15), sans ouvrir de fenetre ni changer position. Les clics de slots et l ouverture de GUI de machine restent non testes en runtime car aucun menu cible accessible ni bridge authentifie n etait disponible.

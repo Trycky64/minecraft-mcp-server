@@ -3,17 +3,22 @@ import mineflayer from 'mineflayer';
 import { ToolFactory } from '../tool-factory.js';
 import { MessageStore } from '../message-store.js';
 
-export function registerChatTools(factory: ToolFactory, getBot: () => mineflayer.Bot, messageStore: MessageStore): void {
+const MAX_CHAT_MESSAGE_LENGTH = 256;
+
+export function registerChatTools(factory: ToolFactory, getBot: () => mineflayer.Bot, messageStore: MessageStore, options: { profile?: 'processia-test' } = {}): void {
   factory.registerTool(
     "send-chat",
     "Send a chat message in-game",
     {
-      message: z.string().describe("Message to send in chat")
+      message: z.string().trim().min(1).max(MAX_CHAT_MESSAGE_LENGTH).describe(`Message to send in chat (1-${MAX_CHAT_MESSAGE_LENGTH} characters)`)
     },
     async ({ message }) => {
+      if (options.profile === 'processia-test' && message.startsWith('/')) {
+        return factory.createErrorResponse('processia-test-command-chat-refused: slash commands are not allowed');
+      }
       const bot = getBot();
       bot.chat(message);
-      return factory.createResponse(`Sent message: "${message}"`);
+      return factory.createResponse(JSON.stringify({ status: 'chat-send-requested', actionSent: true, serverConfirmed: false, message }));
     }
   );
 

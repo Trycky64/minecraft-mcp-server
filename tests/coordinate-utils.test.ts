@@ -12,3 +12,9 @@ test('coerceCoordinates throws when any coordinate is not a finite number', (t) 
   t.throws(() => coerceCoordinates(1, Number.POSITIVE_INFINITY, 2), { message: 'x, y, and z must be valid numbers' });
   t.throws(() => coerceCoordinates(1, 2, Number.NEGATIVE_INFINITY), { message: 'x, y, and z must be valid numbers' });
 });
+
+test('coerceCoordinates rejects coordinates outside bounded Minecraft world limits', (t) => {
+  t.throws(() => coerceCoordinates(30_000_001, 64, 0), { message: 'coordinates are outside the supported world bounds' });
+  t.throws(() => coerceCoordinates(0, 2049, 0), { message: 'coordinates are outside the supported world bounds' });
+  t.throws(() => coerceCoordinates(0, 64, -30_000_001), { message: 'coordinates are outside the supported world bounds' });
+});

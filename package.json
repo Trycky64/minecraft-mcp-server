@@ -1,8 +1,17 @@
 {
   "name": "minecraft-mcp-server",
-  "version": "2.0.4",
+  "version": "2.1.0-beta.1",
   "type": "module",
+  "license": "Apache-2.0",
   "main": "dist/main.js",
+  "files": [
+    "dist",
+    "docs/BRIDGE_ONLY_MODE.md",
+    "docs/INSTALLATION.md",
+    "docs/gui-harness-p3.md",
+    "docs/registry-service.md",
+    "docs/universal-neoforge-bridge.md"
+  ],
   "bin": {
     "minecraft-mcp-server": "dist/main.js"
   },
@@ -16,6 +25,7 @@
   },
   "scripts": {
     "dev": "tsx src/main.ts",
+    "dev:processia-test": "tsx src/main.ts --profile processia-test --host 127.0.0.1 --port 25665 --username CodexBot",
     "build": "tsc -p tsconfig.build.json",
     "prepare": "npm run build",
     "start": "node dist/main.js",
@@ -24,8 +34,9 @@
     "lint:fix": "eslint \"{src,tests}/**/*.ts\" --fix"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "minecraft-data": "^3.105.0",
+    "minecraft-protocol": "^1.64.0",
     "mineflayer": "^4.35.0",
     "mineflayer-pathfinder": "^2.4.2",
     "vec3": "^0.1.8",

@@ -1,5 +1,7 @@
 # Universal NeoForge bridge contract
 
+Current release readiness and the verified runtime matrix are tracked in [RELEASE_READINESS.md](RELEASE_READINESS.md). This contract describes the bridge API; it does not imply that every optional GUI or mod capability has passed runtime validation.
+
 ## Scope and optionality
 
 The MCP server and all existing Mineflayer tools work without NeoForge, this bridge, or Processia. The standalone companion mod at the sibling repository path `../Processia/neoforge-bridge` has its own mod ID (`minecraft_mcp_bridge`) and Java package (`dev.minecraftmcp.bridge`); it has no Processia source dependency. The older `com.trycky.processia.bridge` is a legacy adapter for machine-specific Processia data.
@@ -26,7 +28,7 @@ MINECRAFT_MCP_BRIDGE_PORT=25577
 MINECRAFT_MCP_BRIDGE_CREDENTIAL_FILE=<private-path>
 ```
 
-On server start the mod creates a cryptographically random 256-bit bearer secret if no `MINECRAFT_MCP_BRIDGE_SECRET` is provided. It writes the secret, generated server identity, endpoint and NeoForge version into the credential file with POSIX mode `0600`. On platforms/filesystems that cannot provide owner-only POSIX permissions, startup fails closed. The file is replaced only if it is already a private bridge credential and is removed on normal server shutdown. A hard process crash can leave an expired file; delete that specific generated file before restarting. The secret is never logged.
+On server start the mod creates a cryptographically random 256-bit bearer secret if no `MINECRAFT_MCP_BRIDGE_SECRET` is provided. It writes the secret, generated server identity, endpoint and NeoForge version into the credential file and verifies owner-only permissions before publishing the secret: POSIX filesystems use mode `0600`; Windows filesystems must support an ACL containing only the owner. On platforms/filesystems that cannot enforce and verify owner-only access, startup fails closed. The file is replaced only if it is already a private bridge credential and is removed on normal server shutdown. A hard process crash can leave an expired file; delete that specific generated file before restarting. The secret is never logged.
 
 In the MCP process:
 
@@ -61,6 +63,12 @@ The HTTP thread parses/authenticates bounded requests and dispatches every serve
 
 ## MCP tools
 
+### MCP connection modes
+
+`--connection-mode bot` is the default and preserves the Mineflayer workflow. `--connection-mode bridge-only` skips Mineflayer completely and requires `--bridge-minecraft-version` plus an authenticated generic bridge credential file. Registry and loaded-block/capability tools remain available, while player, movement, chat, inventory, GUI and placement tools return an explicit `bot-required` error. The generic bridge remains disabled unless explicitly configured.
+
+`--connection-mode auto` first attempts Mineflayer. If that fails, it may attempt bridge-only only when the status ping identifies the endpoint as modded or the kick explicitly requires a NeoForge client, and only if the generic bridge is enabled and correctly configured. A fresh authenticated handshake and identity/endpoint/version validation are still mandatory; ping metadata alone never authorizes registry data, and bridge authentication/configuration errors never cause an unauthenticated fallback. Generic `serverbound/minecraft:hello` decoder errors are ambiguous and are not used as a fallback signal. See [`BRIDGE_ONLY_MODE.md`](BRIDGE_ONLY_MODE.md) for variables and examples.
+
 - `minecraft-get-server-info` and `minecraft-get-capabilities` report negotiated server state and only observed/implemented features.
 - `minecraft-list-namespaces` derives namespaces from loaded current-version snapshots; it does not use a hard-coded mod allowlist.
 - `minecraft-search-registry` queries a bounded current-session snapshot; use `bridge-refresh-registries` first for newly connected servers.
@@ -81,4 +89,4 @@ Current limits:
 - No GUI screenshots, clicks or framebuffer integration are part of this generic bridge.
 - The legacy Processia adapter still uses its own protocol headers and configured shared secret; the generated credential flow belongs to the standalone generic bridge.
 - Complete refresh is capped at 100,000 entries in TypeScript to bound memory on ARM64. Oversized refreshes fail closed; they do not publish partial snapshots as complete.
-- The generic bridge has been exercised against an isolated NeoForge 21.1.259 / Minecraft 1.21.1 server without Processia. It exposed 118 complete registries and served a real loaded-block inspection. The vanilla test world has no positive FE/fluid provider or Processia machines; details and remaining runtime coverage are tracked in `UNIVERSALIZATION_REPORT.md`.
+- Historical Mission 2 coverage was generic NeoForge without Processia. Mission 6 subsequently exercised bridge-only MCP against vanilla, generic NeoForge, Processia and Mekanism isolated profiles, including a non-empty Mekanism fluid capability via a test-only fixture. See [`MISSION6_FINAL_REPORT.md`](MISSION6_FINAL_REPORT.md) for the current evidence and limitations.

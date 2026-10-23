@@ -4,6 +4,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NeoForgeBridgeClient, NeoForgeBridgeIntegration, readBridgeClientConfig } from '../src/bridge/neoforge-bridge-client.js';
+import type { BridgeAdapterError } from '../src/bridge/bridge-adapter-contract.js';
 import { RuntimeRegistryService } from '../src/services/runtime-registry-service.js';
 import type mineflayer from 'mineflayer';
 
@@ -53,6 +54,20 @@ test('generic bridge mode loads owner-only ephemeral credentials and uses generi
   t.false(JSON.stringify(integration.status()).includes(generatedSecret));
 });
 
+test('generic bridge credential loading rejects oversized files before parsing', (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'minecraft-mcp-bridge-test-'));
+  const credentialFile = join(directory, 'bridge.credentials.json');
+  writeFileSync(credentialFile, `${JSON.stringify({ format: 'minecraft-mcp-bridge-credential-v1', secret,
+    serverIdentity, minecraftEndpoint: '127.0.0.1:25565', neoForgeVersion: '21.1.259' })}${' '.repeat(16 * 1024)}`);
+  chmodSync(credentialFile, 0o600);
+  t.teardown(() => rmSync(directory, { recursive: true, force: true }));
+
+  const cfg = readBridgeClientConfig({ MINECRAFT_MCP_BRIDGE_ENABLED: 'true', MINECRAFT_MCP_BRIDGE_CREDENTIAL_FILE: credentialFile });
+  t.is(cfg.configurationError, 'credential-file-unavailable-or-invalid');
+  t.is(cfg.secret, null);
+  t.false(JSON.stringify(cfg).includes(secret));
+});
+
 test.serial('generic registry index accepts additional registry types with stable pagination semantics', async (t) => {
   const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (input, init) => {
     const url = new URL(String(input));
@@ -93,9 +108,17 @@ test.serial('generic registry refresh preserves per-session numeric-ID scope and
   t.is(result.status, 'resolved');
   if (result.status === 'resolved') {
     t.is(result.provenance.source, 'neoforge-bridge');
+    t.is(result.provenance.authority, 'authenticated-runtime');
     t.is(result.entry.numericId, 1200);
     t.is(result.entry.numericIdScope, 'server-registry-generation');
     t.is(result.provenance.registryEpoch, before.registryEpoch);
+    t.is(result.provenance.runtimeEpoch, before.runtimeEpoch);
+    t.is(result.provenance.mineflayerSessionId, before.mineflayerSessionId);
+    t.is(result.provenance.mineflayerRegistryEpoch, before.registryEpoch);
+    t.is(result.provenance.bridgeSessionId, runtime.getContext().bridgeSessionId);
+    t.is(result.provenance.sourceRegistryEpoch, javaEpoch);
+    t.is(result.provenance.minecraftEndpoint, '127.0.0.1:25565');
+    t.is(result.provenance.registryCoverage, 'complete');
   }
 });
 function mockRuntime() {
@@ -110,6 +133,29 @@ test('bridge client is disabled by default and never exposes configured secret i
   const integration = new NeoForgeBridgeIntegration(mockRuntime().runtime, config());
   t.false(JSON.stringify(integration.status()).includes(secret));
   t.true(JSON.stringify(integration.status()).includes('secretConfigured'));
+});
+
+test.serial('bridge-only authenticates and creates a registry context without Mineflayer', async (t) => {
+  const expectedEndpoint = '127.0.0.1:25665';
+  const bridgeOnlyConfig = readBridgeClientConfig({
+    MINECRAFT_MCP_BRIDGE_ENABLED: 'true', MINECRAFT_MCP_BRIDGE_URL: 'http://127.0.0.1:25677',
+    MINECRAFT_MCP_BRIDGE_SECRET: secret, MINECRAFT_MCP_BRIDGE_SERVER_IDENTITY: serverIdentity,
+    MINECRAFT_MCP_SERVER_ENDPOINT: expectedEndpoint, MINECRAFT_MCP_BRIDGE_NEOFORGE_VERSION: '21.1.259',
+    MINECRAFT_MCP_BRIDGE_MINECRAFT_VERSION: '1.21.1', MINECRAFT_MCP_CONNECTION_MODE: 'bridge-only',
+  });
+  const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (_input, init) => bridgeReply(init, { ...handshake(), minecraftEndpoint: expectedEndpoint }));
+  t.teardown(() => fetch.restore());
+  const runtime = new RuntimeRegistryService({ getBot: () => null, isConnected: () => false,
+    getConfig: () => ({ host: '127.0.0.1', port: 25665 }), getConnectionMode: () => 'bridge-only' });
+  const bridge = new NeoForgeBridgeIntegration(runtime, bridgeOnlyConfig);
+  const result = await bridge.connectBridgeOnly('1.21.1');
+  t.is(result.status, 'authenticated');
+  t.is(fetch.callCount, 1);
+  t.is(runtime.getContext().connectionMode, 'bridge-only');
+  t.false(runtime.getContext().playerAvailable);
+  t.true(runtime.getContext().bridgeAvailable);
+  t.is(runtime.getContext().registryService!.resolve({ kind: 'block', minecraftVersion: '1.21.1', namespacedId: 'minecraft:stone' }).status, 'resolved');
+  t.false(JSON.stringify(bridge.status()).includes(secret));
 });
 
 test('enabled client rejects non-loopback bridge URLs and weak secrets', (t) => {
@@ -192,7 +238,8 @@ test.serial('registry page metadata changes are rejected before injection', asyn
   });
   t.teardown(() => fetch.restore());
   const { runtime } = mockRuntime(); const integration = new NeoForgeBridgeIntegration(runtime, config());
-  await t.throwsAsync(integration.refreshRegistries(), { message: 'bridge-session-metadata-changed' });
+  const staleEpoch = await t.throwsAsync(integration.refreshRegistries(), { message: 'bridge-session-metadata-changed' });
+  t.is((staleEpoch as BridgeAdapterError).code, 'stale-registry-epoch');
   t.false(runtime.getContext().bridgeAvailable);
 });
 
@@ -211,10 +258,12 @@ test.serial('every data response validates endpoint identity and numeric ID coll
   });
   t.teardown(() => fetch.restore());
   const { runtime } = mockRuntime(); const integration = new NeoForgeBridgeIntegration(runtime, config());
-  await t.throwsAsync(integration.refreshRegistries(), { message: 'bridge-session-metadata-changed' });
+  const wrongIdentity = await t.throwsAsync(integration.refreshRegistries(), { message: 'bridge-session-metadata-changed' });
+  t.is((wrongIdentity as BridgeAdapterError).code, 'server-identity-mismatch');
   t.false(runtime.getContext().bridgeAvailable);
   corruptEndpoint = false;
-  await t.throwsAsync(integration.refreshRegistries(), { message: 'bridge-registry-numeric-id-collision' });
+  const collision = await t.throwsAsync(integration.refreshRegistries(), { message: 'bridge-registry-numeric-id-collision' });
+  t.is((collision as BridgeAdapterError).code, 'invalid-bridge-response');
   t.false(runtime.getContext().bridgeAvailable);
 });
 
@@ -227,6 +276,199 @@ test.serial('registry pagination rejects a snapshot beyond the bounded memory li
   const { runtime } = mockRuntime(); const integration = new NeoForgeBridgeIntegration(runtime, config());
   await t.throwsAsync(integration.refreshRegistries(), { message: 'bridge-registry-total-exceeds-safety-limit' });
   t.false(runtime.getContext().bridgeAvailable);
+});
+
+test.serial('registry snapshot is not published when the Java source epoch changes between pages', async (t) => {
+  const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/handshake')) return bridgeReply(init, handshake());
+    const kind = url.searchParams.get('kind')!;
+    const offset = Number(url.searchParams.get('offset'));
+    const rows = offset === 0
+      ? Array.from({ length: 500 }, (_, index) => ({ namespacedId: `processia:item_${index}`, numericId: index, kind }))
+      : [{ namespacedId: 'processia:item_500', numericId: 500, kind }];
+    return bridgeReply(init, { ...base(), ...(offset ? { registryEpoch: '78ea6b8d-40b5-4c9f-8bf0-bdb54ad3fa9c' } : {}), kind,
+      completeness: 'complete', offset, limit: 500, total: 501, entries: rows });
+  });
+  t.teardown(() => fetch.restore());
+  const { runtime } = mockRuntime();
+  const integration = new NeoForgeBridgeIntegration(runtime, config());
+  const error = await t.throwsAsync(integration.refreshRegistries());
+  t.is((error as BridgeAdapterError).code, 'stale-registry-epoch');
+  t.is(runtime.getContext().registryService!.getEntries({ source: 'neoforge-bridge', limit: null }).length, 0);
+  t.false(runtime.getContext().bridgeAvailable);
+});
+
+test.serial('closing the bridge during paginated refresh prevents later publication', async (t) => {
+  let resolvePage!: (response: Response) => void;
+  let pageRequested!: () => void;
+  let pageInit: RequestInit | undefined;
+  const pendingPage = new Promise<Response>(resolve => { resolvePage = resolve; });
+  const requested = new Promise<void>(resolve => { pageRequested = resolve; });
+  const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/handshake')) return bridgeReply(init, handshake());
+    const kind = url.searchParams.get('kind')!;
+    if (url.pathname.endsWith('/close')) return bridgeReply(init, { closed: true });
+    if (kind === 'item') { pageInit = init; pageRequested(); return pendingPage; }
+    return bridgeReply(init, { ...base(), kind, completeness: 'complete', offset: 0, limit: 500, total: 0, entries: [] });
+  });
+  t.teardown(() => fetch.restore());
+  const { runtime } = mockRuntime();
+  const integration = new NeoForgeBridgeIntegration(runtime, config());
+  const refresh = integration.refreshRegistries();
+  await requested;
+  await integration.close();
+  resolvePage(bridgeReply(pageInit, { ...base(), kind: 'item', completeness: 'complete', offset: 0, limit: 500, total: 1,
+    entries: [{ namespacedId: 'processia:late', numericId: 91, kind: 'item' }] }));
+  await t.throwsAsync(refresh, { message: 'bridge-session-expired' });
+  t.is(runtime.getContext().registryService!.getEntries({ source: 'neoforge-bridge', limit: null }).length, 0);
+  t.false(runtime.getContext().bridgeAvailable);
+});
+
+test.serial('duplicate rows across pages fail closed without publishing a snapshot', async (t) => {
+  const duplicate = { namespacedId: 'processia:duplicate', numericId: 1373, kind: 'item' };
+  const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/handshake')) return bridgeReply(init, handshake());
+    const kind = url.searchParams.get('kind')!;
+    if (kind === 'item') {
+      const offset = Number(url.searchParams.get('offset'));
+      return bridgeReply(init, { ...base(), kind, completeness: 'complete', offset, limit: 500, total: 2, entries: [duplicate] });
+    }
+    return bridgeReply(init, { ...base(), kind, completeness: 'complete', offset: 0, limit: 500, total: 0, entries: [] });
+  });
+  t.teardown(() => fetch.restore());
+  const { runtime } = mockRuntime();
+  const integration = new NeoForgeBridgeIntegration(runtime, config());
+  await t.throwsAsync(integration.refreshRegistries(), { message: /bridge-registry-duplicate/ });
+  t.is(runtime.getContext().registryService!.getEntries({ source: 'neoforge-bridge', limit: null }).length, 0);
+  t.false(runtime.getContext().bridgeAvailable);
+});
+
+test.serial('an omitted page before the reported total cannot produce an empty complete snapshot', async (t) => {
+  const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/handshake')) return bridgeReply(init, handshake());
+    const kind = url.searchParams.get('kind')!;
+    return bridgeReply(init, { ...base(), kind, completeness: 'complete', offset: Number(url.searchParams.get('offset')), limit: 500,
+      total: kind === 'item' ? 2 : 0, entries: [] });
+  });
+  t.teardown(() => fetch.restore());
+  const { runtime } = mockRuntime();
+  const integration = new NeoForgeBridgeIntegration(runtime, config());
+  await t.throwsAsync(integration.refreshRegistries(), { message: 'bridge-registry-pagination-inconsistent' });
+  t.is(runtime.getContext().registryService!.getEntries({ source: 'neoforge-bridge', limit: null }).length, 0);
+});
+
+test.serial('a changed page total invalidates the entire registry read', async (t) => {
+  const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/handshake')) return bridgeReply(init, handshake());
+    const kind = url.searchParams.get('kind')!;
+    const offset = Number(url.searchParams.get('offset'));
+    const entries = kind === 'item' ? [{ namespacedId: `processia:page_${offset}`, numericId: offset, kind }] : [];
+    return bridgeReply(init, { ...base(), kind, completeness: 'complete', offset, limit: 500,
+      total: kind === 'item' && offset === 0 ? 2 : kind === 'item' ? 3 : 0, entries });
+  });
+  t.teardown(() => fetch.restore());
+  const { runtime } = mockRuntime();
+  const integration = new NeoForgeBridgeIntegration(runtime, config());
+  await t.throwsAsync(integration.refreshRegistries(), { message: 'bridge-registry-pagination-inconsistent' });
+  t.is(runtime.getContext().registryService!.getEntries({ source: 'neoforge-bridge', limit: null }).length, 0);
+});
+
+test.serial('a newer concurrent registry refresh wins and an older completion cannot replace it', async (t) => {
+  let resolveOldPage!: (response: Response) => void;
+  let oldPageRequested!: () => void;
+  const oldPage = new Promise<Response>(resolve => { resolveOldPage = resolve; });
+  const pageRequested = new Promise<void>(resolve => { oldPageRequested = resolve; });
+  let pageCalls = 0;
+  let oldPageInit: RequestInit | undefined;
+  const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/handshake')) return bridgeReply(init, handshake());
+    const kind = url.searchParams.get('kind')!;
+    if (kind !== 'item') return bridgeReply(init, { ...base(), kind, completeness: 'complete', offset: 0, limit: 500, total: 0, entries: [] });
+    pageCalls += 1;
+    if (pageCalls === 1) {
+      oldPageRequested();
+      oldPageInit = init;
+      return oldPage;
+    }
+    return bridgeReply(init, { ...base(), kind, completeness: 'complete', offset: 0, limit: 500, total: 1,
+      entries: [{ namespacedId: 'processia:current', numericId: 222, kind }] });
+  });
+  t.teardown(() => fetch.restore());
+  const { runtime } = mockRuntime();
+  const integration = new NeoForgeBridgeIntegration(runtime, config());
+  const olderRefresh = integration.refreshRegistries();
+  await pageRequested;
+  await integration.refreshRegistries();
+  resolveOldPage(bridgeReply(oldPageInit, { ...base(), kind: 'item', completeness: 'complete', offset: 0, limit: 500, total: 1,
+    entries: [{ namespacedId: 'processia:stale', numericId: 111, kind: 'item' }] }));
+  const superseded = await t.throwsAsync(olderRefresh, { message: 'bridge-registry-refresh-superseded' });
+  t.is((superseded as BridgeAdapterError).code, 'operation-superseded');
+  const context = runtime.getContext();
+  t.true(context.bridgeAvailable);
+  t.truthy(integration.adapter.session);
+  t.is(context.registryService!.resolve({ kind: 'item', minecraftVersion: '1.21.1', registryEpoch: context.registryEpoch!, namespacedId: 'processia:current' }).status, 'resolved');
+  t.is(context.registryService!.resolve({ kind: 'item', minecraftVersion: '1.21.1', registryEpoch: context.registryEpoch!, namespacedId: 'processia:stale' }).status, 'unresolved');
+});
+
+test.serial('a partial runtime snapshot keeps unknown IDs unobserved and exposes its provenance', async (t) => {
+  const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/handshake')) return bridgeReply(init, handshake());
+    const kind = url.searchParams.get('kind')!;
+    const entries = kind === 'item' ? [{ namespacedId: 'processia:known', numericId: 12, kind }] : [];
+    return bridgeReply(init, { ...base(), kind, completeness: 'partial', offset: 0, limit: 500, total: entries.length, entries });
+  });
+  t.teardown(() => fetch.restore());
+  const { runtime } = mockRuntime();
+  const integration = new NeoForgeBridgeIntegration(runtime, config());
+  await integration.refreshRegistries();
+  const context = runtime.getContext();
+  const snapshot = context.registryService!.getSnapshots().find(item => item.source === 'neoforge-bridge');
+  t.is(snapshot?.registryCoverage?.item, 'partial');
+  const known = context.registryService!.resolve({ kind: 'item', minecraftVersion: '1.21.1', registryEpoch: context.registryEpoch!, namespacedId: 'processia:known' });
+  t.is(known.status, 'resolved');
+  if (known.status === 'resolved') {
+    t.is(known.provenance.registryCoverage, 'partial');
+    t.is(known.provenance.authority, 'authenticated-runtime');
+  }
+  const unknown = context.registryService!.resolve({ kind: 'item', minecraftVersion: '1.21.1', registryEpoch: context.registryEpoch!, numericId: 1373 });
+  t.is(unknown.status, 'unresolved');
+  if (unknown.status === 'unresolved') t.is(unknown.reason, 'mapping-not-observed');
+});
+
+test.serial('a reconnected bot with the same version but a different server identity cannot reuse the old snapshot', async (t) => {
+  const { runtime, replaceBot } = mockRuntime();
+  let handshakes = 0;
+  const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/handshake')) {
+      handshakes += 1;
+      return bridgeReply(init, handshakes === 1 ? handshake() : { ...handshake(), serverIdentity: 'another-server' });
+    }
+    const kind = url.searchParams.get('kind')!;
+    const entries = handshakes === 1 && kind === 'item' ? [{ namespacedId: 'processia:old_identity', numericId: 44, kind }] : [];
+    return bridgeReply(init, { ...base(), kind, completeness: 'complete', offset: 0, limit: 500, total: entries.length, entries });
+  });
+  t.teardown(() => fetch.restore());
+  const integration = new NeoForgeBridgeIntegration(runtime, config());
+  const oldContext = runtime.getContext();
+  await integration.refreshRegistries();
+  t.is(runtime.getContext().serverIdentity, serverIdentity);
+  replaceBot();
+  const next = runtime.getContext();
+  t.not(next.registryEpoch, oldContext.registryEpoch);
+  await t.throwsAsync(integration.refreshRegistries(), { message: 'bridge-server-identity-mismatch' });
+  const current = runtime.getContext();
+  t.is(current.serverIdentity, null);
+  t.false(current.bridgeAvailable);
+  t.is(current.registryService!.resolve({ kind: 'item', minecraftVersion: '1.21.1', registryEpoch: current.registryEpoch!, namespacedId: 'processia:old_identity' }).status, 'unresolved');
+  t.is(handshakes, 2);
 });
 
 test.serial('reconnect during a pending registry page cannot publish stale mappings', async (t) => {
@@ -247,7 +489,8 @@ test.serial('reconnect during a pending registry page cannot publish stale mappi
   replaceBot();
   releasePage(bridgeReply(fetch.lastCall.args[1], { ...base(), kind: 'item', completeness: 'complete', offset: 0, limit: 500, total: 1,
     entries: [{ namespacedId: 'processia:crusher', numericId: 1234, kind: 'item' }] }));
-  await t.throwsAsync(refresh, { message: 'bridge-operation-invalidated-by-runtime-session-change' });
+  const staleRuntime = await t.throwsAsync(refresh, { message: 'bridge-operation-invalidated-by-runtime-session-change' });
+  t.is((staleRuntime as BridgeAdapterError).code, 'stale-registry-epoch');
   const context = runtime.getContext();
   t.not(context.registryEpoch, oldEpoch);
   t.false(context.bridgeAvailable);
@@ -279,12 +522,73 @@ test.serial('bot reconnect requires a fresh bridge handshake and invalidates pri
   t.is(generation, 2);
 });
 
+test.serial('superseded integration handshake cannot clear a newer authenticated session', async (t) => {
+  let resolveFirst!: (response: Response) => void;
+  let resolveSecond!: (response: Response) => void;
+  const firstHandshake = new Promise<Response>(resolve => { resolveFirst = resolve; });
+  const secondHandshake = new Promise<Response>(resolve => { resolveSecond = resolve; });
+  let handshakeCalls = 0;
+  const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (path.endsWith('/handshake')) {
+      handshakeCalls += 1;
+      return handshakeCalls === 1 ? firstHandshake : secondHandshake;
+    }
+    const kind = new URL(String(input)).searchParams.get('kind')!;
+    return bridgeReply(init, { ...base(), kind, completeness: 'complete', offset: 0, limit: 500, total: 0, entries: [] });
+  });
+  t.teardown(() => fetch.restore());
+  const { runtime } = mockRuntime();
+  const integration = new NeoForgeBridgeIntegration(runtime, config());
+  const earlierRefresh = integration.refreshRegistries();
+  const latestRefresh = integration.refreshRegistries();
+  const secondId = 'f3ac08b0-5227-4d5b-ab42-f562e13207d6';
+  resolveSecond(bridgeReply(fetch.secondCall.args[1], { ...handshake(), sessionId: secondId }));
+  await latestRefresh;
+  t.is(runtime.getContext().bridgeSession?.sessionId, secondId);
+  resolveFirst(bridgeReply(fetch.firstCall.args[1], handshake()));
+  const stale = await t.throwsAsync(earlierRefresh);
+  t.is((stale as BridgeAdapterError).code, 'session-expired');
+  t.is(runtime.getContext().bridgeSession?.sessionId, secondId);
+  t.is(integration.status().bridgeAvailable, true);
+});
+
 test.serial('bridge client reports timeouts and malformed replies without exposing secret', async (t) => {
   const fetch = sinon.stub(globalThis, 'fetch').rejects(new DOMException('timeout', 'TimeoutError'));
   t.teardown(() => fetch.restore());
   const client = new NeoForgeBridgeClient(config());
   await t.throwsAsync(client.handshake('1.21.1', '127.0.0.1:25565'), { message: 'bridge-request-timeout' });
   t.false(String(client.getSession()).includes(secret));
+});
+
+test.serial('local deadline wins over a late fetch response and the late session is never installed', async (t) => {
+  let resolveResponse!: (response: Response) => void;
+  const pendingResponse = new Promise<Response>(resolve => { resolveResponse = resolve; });
+  const fetch = sinon.stub(globalThis, 'fetch').returns(pendingResponse);
+  t.teardown(() => fetch.restore());
+  const client = new NeoForgeBridgeClient({ ...config(), timeoutMs: 25 });
+  const handshakePromise = client.handshake('1.21.1', '127.0.0.1:25565');
+  await t.throwsAsync(handshakePromise, { message: 'bridge-request-timeout' });
+  resolveResponse(bridgeReply(fetch.firstCall.args[1], handshake()));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  t.is(client.getSession(), null);
+});
+
+test.serial('request deadline cancels a response body that never finishes', async (t) => {
+  let cancelled = false;
+  const fetch = sinon.stub(globalThis, 'fetch').callsFake(async (_input, init) => {
+    const requestId = new Headers(init?.headers).get('X-Processia-Request-Id') ?? '';
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new TextEncoder().encode('{"requestId":"' + requestId + '"}')); },
+      cancel() { cancelled = true; },
+    });
+    return new Response(body, { status: 200, headers: { 'X-Processia-Request-Id': requestId } });
+  });
+  t.teardown(() => fetch.restore());
+  const client = new NeoForgeBridgeClient({ ...config(), timeoutMs: 25 });
+  await t.throwsAsync(client.handshake('1.21.1', '127.0.0.1:25565'), { message: 'bridge-request-timeout' });
+  t.true(cancelled);
+  t.is(client.getSession(), null);
 });
 
 test.serial('oversized streaming responses are cancelled at the byte limit', async (t) => {

@@ -10,7 +10,7 @@ export function registerEntityTools(factory: ToolFactory, getBot: () => Bot): vo
     "Find the nearest entity of a specific type",
     {
       type: z.string().optional().describe("Type of entity to find (empty for any entity)"),
-      maxDistance: z.coerce.number().finite().optional().describe("Maximum search distance (default: 16)")
+      maxDistance: z.coerce.number().finite().positive().max(128).optional().describe("Maximum search distance (default: 16, max: 128)")
     },
     async ({ type = '', maxDistance = 16 }) => {
       const bot = getBot();
@@ -28,7 +28,20 @@ export function registerEntityTools(factory: ToolFactory, getBot: () => Bot): vo
       }
 
       const entityName = entity.name || (entity as { username?: string }).username || entity.type;
-      return factory.createResponse(`Found ${entityName} at position (${Math.floor(entity.position.x)}, ${Math.floor(entity.position.y)}, ${Math.floor(entity.position.z)})`);
+      const droppedItem = entity.getDroppedItem?.() ?? null;
+      const details = {
+        entityId: entity.id,
+        name: entityName,
+        type: entity.type,
+        position: { x: entity.position.x, y: entity.position.y, z: entity.position.z },
+        droppedItem: droppedItem ? {
+          rawNumericId: droppedItem.type,
+          count: droppedItem.count,
+          mineflayerName: droppedItem.name,
+          identity: droppedItem.name === 'unknown' ? 'unresolved' : 'mineflayer-name-only',
+        } : null,
+      };
+      return factory.createResponse(`Found ${entityName} at position (${Math.floor(entity.position.x)}, ${Math.floor(entity.position.y)}, ${Math.floor(entity.position.z)})\nEntity details (JSON):\n${JSON.stringify(details)}`);
     }
   );
 }

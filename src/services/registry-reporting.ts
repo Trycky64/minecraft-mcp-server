@@ -63,7 +63,8 @@ export function annotateItem(item: InventoryStackLike, context: RuntimeRegistryC
       ? (resolution.provenance.source === 'minecraft-data' ? 'version-static-candidate' : 'session-observed')
       : staticCandidate ? 'version-static-candidate' : 'unresolved',
     staticCandidate,
-    runtimeNumericIdVerified: resolution?.status === 'resolved' && resolution.provenance.source !== 'minecraft-data' && resolution.provenance.registryEpoch === context?.registryEpoch,
+    runtimeNumericIdVerified: resolution?.status === 'resolved' && resolution.provenance.authority === 'authenticated-runtime' &&
+      resolution.provenance.registryEpoch === context?.registryEpoch && resolution.provenance.runtimeEpoch === context?.runtimeEpoch,
     minecraftVersion: context?.minecraftVersion ?? null,
     registryEpoch: context?.registryEpoch ?? null,
     ...(components === undefined ? {} : { components }),

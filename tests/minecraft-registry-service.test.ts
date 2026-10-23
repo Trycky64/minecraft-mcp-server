@@ -204,6 +204,29 @@ test('runtime numeric mapping wins a collision with static vanilla data only in 
   }
 });
 
+test('the same raw ID can map differently across authoritative generations but the active resolver rejects the old generation', (t) => {
+  const oldSnapshot: RegistrySourceSnapshot = {
+    source: 'neoforge-bridge', minecraftVersion: '1.21.1', registryEpoch: 'registry-old',
+    availableRegistries: ['item'], registryCoverage: { item: 'complete' },
+    entries: [{ kind: 'item', minecraftVersion: '1.21.1', namespacedId: 'processia:old_item', numericId: 1373,
+      registryEpoch: 'registry-old', provenance: { source: 'neoforge-bridge', minecraftVersion: '1.21.1', registryEpoch: 'registry-old' } }],
+  };
+  const newSnapshot: RegistrySourceSnapshot = {
+    source: 'neoforge-bridge', minecraftVersion: '1.21.1', registryEpoch: 'registry-new',
+    availableRegistries: ['item'], registryCoverage: { item: 'complete' },
+    entries: [{ kind: 'item', minecraftVersion: '1.21.1', namespacedId: 'processia:new_item', numericId: 1373,
+      registryEpoch: 'registry-new', provenance: { source: 'neoforge-bridge', minecraftVersion: '1.21.1', registryEpoch: 'registry-new' } }],
+  };
+  const service = new MinecraftRegistryService([oldSnapshot, newSnapshot]);
+  service.bindRuntimeContext('registry-new', 'runtime-new');
+  const current = service.resolve({ kind: 'item', minecraftVersion: '1.21.1', numericId: 1373, registryEpoch: 'registry-new' });
+  t.is(current.status, 'resolved');
+  if (current.status === 'resolved') t.is(current.entry.namespacedId, 'processia:new_item');
+  const stale = service.resolve({ kind: 'item', minecraftVersion: '1.21.1', numericId: 1373, registryEpoch: 'registry-old' });
+  t.is(stale.status, 'unavailable');
+  if (stale.status === 'unavailable') t.is(stale.reason, 'stale-context');
+});
+
 test('addSnapshot makes the same deep defensive copy as the constructor', (t) => {
   const source: RegistrySourceSnapshot = {
     source: 'protocol', minecraftVersion: '1.21.1', registryEpoch: 'copy-epoch', availableRegistries: ['item'],

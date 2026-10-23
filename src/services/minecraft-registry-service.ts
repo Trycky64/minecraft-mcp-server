@@ -3,16 +3,26 @@ import minecraftData from 'minecraft-data';
 export type RegistryKind = 'item' | 'block' | 'blockState' | 'entity' | 'menu' | (string & {});
 export type RegistrySourceName = 'minecraft-data' | 'protocol' | 'neoforge-bridge' | (string & {});
 export type RegistryNumericIdScope = 'minecraft-data-version' | 'server-registry-generation' | 'server-block-state-generation';
+export type RegistryAuthority = 'static-baseline' | 'protocol-observed' | 'authenticated-runtime';
 
 export interface RegistryProvenance {
   source: RegistrySourceName;
+  authority?: RegistryAuthority;
   minecraftVersion: string;
+  /** Runtime service generation. Distinct from Mineflayer and Java source registry epochs. */
+  runtimeEpoch?: string;
+  /** Compatibility field for the runtime-scoped epoch on entries and resolutions. */
   registryEpoch?: string;
+  minecraftEndpoint?: string;
+  mineflayerSessionId?: string;
+  mineflayerRegistryEpoch?: string;
+  bridgeSessionId?: string;
   /** Runtime registry generation reported by the bridge; distinct from the MCP bot epoch. */
   sourceRegistryEpoch?: string;
   serverIdentity?: string;
   neoForgeVersion?: string;
   observedAt?: string;
+  registryCoverage?: 'complete' | 'partial';
   providerVersion?: string;
 }
 
@@ -62,20 +72,30 @@ interface ResolutionBase {
   kind: RegistryKind;
   minecraftVersion: string;
   registryEpoch?: string;
+  /** Internal service generation, separate from registryEpoch and Java sourceRegistryEpoch. */
+  runtimeEpoch?: string;
   lookup: RegistryLookup;
 }
 
 export type RegistryResolution =
   | (ResolutionBase & { status: 'resolved'; entry: RegistryEntry; provenance: RegistryProvenance })
   | (ResolutionBase & { status: 'unresolved'; reason: 'identifier-not-found' | 'mapping-not-observed' })
-  | (ResolutionBase & { status: 'unavailable'; reason: 'unsupported-version' | 'registry-not-loaded'; availableSources: RegistrySourceName[] })
+  | (ResolutionBase & { status: 'unavailable'; reason: 'unsupported-version' | 'registry-not-loaded' | 'stale-context'; availableSources: RegistrySourceName[] })
   | (ResolutionBase & { status: 'ambiguous'; candidates: RegistryEntry[] });
 
 export interface RegistrySourceSnapshot {
   source: RegistrySourceName;
+  authority?: RegistryAuthority;
   minecraftVersion: string;
-  /** Session/registry generation, required to scope runtime numeric lookups. */
+  /** Active MCP registry generation used to scope runtime numeric lookups; never the Java source epoch. */
   registryEpoch?: string;
+  /** Explicit alias for the service generation; retained separately from sourceRegistryEpoch. */
+  runtimeEpoch?: string;
+  minecraftEndpoint?: string;
+  mineflayerSessionId?: string;
+  mineflayerRegistryEpoch?: string;
+  bridgeSessionId?: string;
+  observedAt?: string;
   sourceRegistryEpoch?: string;
   serverIdentity?: string;
   neoForgeVersion?: string;
@@ -109,6 +129,14 @@ function uniqueEntries(entries: RegistryEntry[]): RegistryEntry[] {
 }
 
 function validateSnapshot(snapshot: RegistrySourceSnapshot): void {
+  if (snapshot.observedAt !== undefined && !Number.isFinite(Date.parse(snapshot.observedAt))) throw new Error('Snapshot observation time must be a valid date');
+  if (new Set(snapshot.availableRegistries).size !== snapshot.availableRegistries.length) throw new Error('Snapshot registry index contains duplicates');
+  if (snapshot.authority === 'static-baseline' && snapshot.source !== 'minecraft-data') throw new Error('Static snapshot authority must come from minecraft-data');
+  if (snapshot.authority === 'protocol-observed' && snapshot.source !== 'protocol') throw new Error('Protocol snapshot authority must come from protocol observation');
+  if (snapshot.authority === 'authenticated-runtime' && snapshot.source !== 'neoforge-bridge') throw new Error('Authenticated snapshot authority must come from NeoForge bridge');
+  if (snapshot.authority === 'authenticated-runtime' && (!snapshot.bridgeSessionId || !snapshot.sourceRegistryEpoch || !snapshot.serverIdentity || !snapshot.minecraftEndpoint || !snapshot.runtimeEpoch)) {
+    throw new Error('Authenticated runtime snapshot provenance is incomplete');
+  }
   for (const kind of Object.keys(snapshot.registryCoverage ?? {})) {
     if (!snapshot.availableRegistries.includes(kind)) {
       throw new Error(`Registry coverage declared for unavailable registry: ${kind}`);
@@ -123,6 +151,48 @@ function validateSnapshot(snapshot: RegistrySourceSnapshot): void {
     }
     if (entry.provenance.source !== snapshot.source) {
       throw new Error('Registry entry provenance source must match its snapshot source');
+    }
+    if (snapshot.authority !== undefined && entry.provenance.authority !== snapshot.authority) {
+      throw new Error('Registry entry authority must match its snapshot');
+    }
+    if (snapshot.sourceRegistryEpoch !== undefined && entry.provenance.sourceRegistryEpoch !== snapshot.sourceRegistryEpoch) {
+      throw new Error('Registry entry source epoch must match its snapshot source epoch');
+    }
+    if (snapshot.serverIdentity !== undefined && entry.provenance.serverIdentity !== snapshot.serverIdentity) {
+      throw new Error('Registry entry server identity must match its snapshot');
+    }
+    if (snapshot.minecraftEndpoint !== undefined && entry.provenance.minecraftEndpoint !== snapshot.minecraftEndpoint) {
+      throw new Error('Registry entry endpoint must match its snapshot');
+    }
+    if (snapshot.bridgeSessionId !== undefined && entry.provenance.bridgeSessionId !== snapshot.bridgeSessionId) {
+      throw new Error('Registry entry bridge session must match its snapshot');
+    }
+    if (snapshot.mineflayerSessionId !== undefined && entry.provenance.mineflayerSessionId !== snapshot.mineflayerSessionId) {
+      throw new Error('Registry entry Mineflayer session must match its snapshot');
+    }
+    if (snapshot.mineflayerRegistryEpoch !== undefined && entry.provenance.mineflayerRegistryEpoch !== snapshot.mineflayerRegistryEpoch) {
+      throw new Error('Registry entry Mineflayer registry epoch must match its snapshot');
+    }
+    if (entry.provenance.authority === 'authenticated-runtime' &&
+        (!entry.provenance.bridgeSessionId || !entry.provenance.serverIdentity || !entry.provenance.minecraftEndpoint ||
+         !entry.provenance.sourceRegistryEpoch || !entry.provenance.runtimeEpoch)) {
+      throw new Error('Authenticated runtime provenance is incomplete');
+    }
+    if (entry.provenance.authority === 'static-baseline' && snapshot.source !== 'minecraft-data') {
+      throw new Error('Static baseline authority must come from minecraft-data');
+    }
+    if (entry.provenance.authority === 'protocol-observed' && snapshot.source !== 'protocol') {
+      throw new Error('Protocol observation authority must come from the protocol source');
+    }
+    if (entry.provenance.authority === 'authenticated-runtime' && snapshot.source !== 'neoforge-bridge') {
+      throw new Error('Authenticated runtime authority must come from a NeoForge bridge');
+    }
+    if (snapshot.source === 'neoforge-bridge' && snapshot.bridgeSessionId !== undefined &&
+        entry.provenance.bridgeSessionId !== snapshot.bridgeSessionId) {
+      throw new Error('Bridge entry provenance session must match its snapshot session');
+    }
+    if (snapshot.runtimeEpoch !== undefined && entry.provenance.runtimeEpoch !== snapshot.runtimeEpoch) {
+      throw new Error('Registry entry provenance runtime epoch must match its snapshot');
     }
     if (entry.registryEpoch !== undefined && entry.provenance.registryEpoch !== entry.registryEpoch) {
       throw new Error('Registry entry and provenance epochs must match');
@@ -181,6 +251,7 @@ export function createMinecraftDataSnapshot(minecraftVersion: string): RegistryS
   if (!data) return undefined;
   const provenance: RegistryProvenance = {
     source: 'minecraft-data',
+    authority: 'static-baseline',
     minecraftVersion,
     registryEpoch: `minecraft-data:${minecraftVersion}`,
   };
@@ -200,6 +271,7 @@ export function createMinecraftDataSnapshot(minecraftVersion: string): RegistryS
   }
   return {
     source: 'minecraft-data',
+    authority: 'static-baseline',
     minecraftVersion,
     registryEpoch: provenance.registryEpoch,
     availableRegistries: ['item', 'block', 'blockState', 'entity'],
@@ -210,6 +282,9 @@ export function createMinecraftDataSnapshot(minecraftVersion: string): RegistryS
 
 export class MinecraftRegistryService {
   private readonly snapshots: RegistrySourceSnapshot[];
+  private activeRegistryEpoch: string | null = null;
+  private activeRuntimeEpoch: string | null = null;
+  private runtimeContextInvalidated = false;
 
   constructor(snapshots: RegistrySourceSnapshot[] = []) {
     snapshots.forEach(validateSnapshot);
@@ -223,13 +298,34 @@ export class MinecraftRegistryService {
     }));
   }
 
+  /** Binds this resolver to one live runtime context. Runtime epochs are never inferred from Java source epochs. */
+  bindRuntimeContext(registryEpoch: string, runtimeEpoch: string): void {
+    this.activeRegistryEpoch = registryEpoch;
+    this.activeRuntimeEpoch = runtimeEpoch;
+    this.runtimeContextInvalidated = false;
+    for (let index = this.snapshots.length - 1; index >= 0; index -= 1) {
+      const snapshot = this.snapshots[index]!;
+      if (snapshot.source !== 'minecraft-data' && snapshot.registryEpoch !== registryEpoch) this.snapshots.splice(index, 1);
+    }
+  }
+
+  /** Revokes runtime associations while retaining version-static minecraft-data as static reference data. */
+  invalidateRuntimeContext(): void {
+    this.runtimeContextInvalidated = true;
+    for (let index = this.snapshots.length - 1; index >= 0; index -= 1) {
+      if (this.snapshots[index]!.source !== 'minecraft-data') this.snapshots.splice(index, 1);
+    }
+  }
+
   addSnapshot(snapshot: RegistrySourceSnapshot): void {
     validateSnapshot(snapshot);
+    this.validateActiveSnapshot(snapshot);
     this.snapshots.push(cloneSnapshot(snapshot));
   }
 
   replaceSnapshot(snapshot: RegistrySourceSnapshot): void {
     validateSnapshot(snapshot);
+    this.validateActiveSnapshot(snapshot);
     const identity = (candidate: RegistrySourceSnapshot) => `${candidate.source}\0${candidate.minecraftVersion}\0${candidate.registryEpoch ?? ''}`;
     const replacement = identity(snapshot);
     for (let index = this.snapshots.length - 1; index >= 0; index -= 1) {
@@ -248,7 +344,7 @@ export class MinecraftRegistryService {
   }
 
   getSnapshots(): RegistrySourceSnapshot[] {
-    return this.snapshots.map(cloneSnapshot);
+    return this.currentSnapshots().map(cloneSnapshot);
   }
 
   getEntries(options: {
@@ -262,7 +358,8 @@ export class MinecraftRegistryService {
   } = {}): RegistryEntry[] {
     const offset = Math.max(0, options.offset ?? 0);
     const limit = options.limit === null ? null : Math.min(500, Math.max(1, options.limit ?? 100));
-    return this.snapshots.flatMap((snapshot) => snapshot.entries.filter((entry) =>
+    return this.currentSnapshots()
+      .flatMap((snapshot) => snapshot.entries.filter((entry) =>
       (options.registryEpoch === undefined || entry.provenance.source === 'minecraft-data' || entry.registryEpoch === options.registryEpoch),
     ))
       .filter((entry) => (options.kind === undefined || entry.kind === options.kind) &&
@@ -274,12 +371,19 @@ export class MinecraftRegistryService {
   }
 
   resolve(lookup: RegistryLookup): RegistryResolution {
-    const base: ResolutionBase = { kind: lookup.kind, minecraftVersion: lookup.minecraftVersion, registryEpoch: lookup.registryEpoch, lookup: { ...lookup } };
+    const base: ResolutionBase = { kind: lookup.kind, minecraftVersion: lookup.minecraftVersion, registryEpoch: lookup.registryEpoch,
+      runtimeEpoch: this.activeRuntimeEpoch ?? undefined, lookup: { ...lookup } };
     if ((!lookup.namespacedId && lookup.numericId === undefined) || (lookup.namespacedId !== undefined && !RESOURCE_LOCATION.test(lookup.namespacedId))) {
       return { ...base, status: 'unresolved', reason: 'mapping-not-observed' };
     }
 
-    const versionSnapshots = this.snapshots.filter((snapshot) => snapshot.minecraftVersion === lookup.minecraftVersion);
+    const staticEpoch = lookup.registryEpoch === `minecraft-data:${lookup.minecraftVersion}`;
+    if (!staticEpoch && lookup.registryEpoch !== undefined &&
+        (this.runtimeContextInvalidated || (this.activeRegistryEpoch !== null && lookup.registryEpoch !== this.activeRegistryEpoch))) {
+      return { ...base, status: 'unavailable', reason: 'stale-context', availableSources: [] };
+    }
+
+    const versionSnapshots = this.currentSnapshots().filter((snapshot) => snapshot.minecraftVersion === lookup.minecraftVersion);
     const registrySnapshots = versionSnapshots.filter((snapshot) => snapshot.availableRegistries.includes(lookup.kind));
     if (lookup.registryEpoch !== undefined) {
       const runtimeEpochLoaded = registrySnapshots.some((snapshot) => isRuntimeSnapshot(snapshot) && hasEpoch(snapshot, lookup.registryEpoch as string));
@@ -373,5 +477,21 @@ export class MinecraftRegistryService {
     const entry = winningCandidates[0];
     if (!entry) return { ...base, status: 'unresolved', reason: 'identifier-not-found' };
     return { ...base, status: 'resolved', entry, provenance: entry.provenance };
+  }
+
+  private currentSnapshots(): RegistrySourceSnapshot[] {
+    return this.snapshots.filter(snapshot =>
+      (!this.runtimeContextInvalidated || snapshot.source === 'minecraft-data') &&
+      (this.activeRegistryEpoch === null || snapshot.source === 'minecraft-data' || snapshot.registryEpoch === this.activeRegistryEpoch));
+  }
+
+  private validateActiveSnapshot(snapshot: RegistrySourceSnapshot): void {
+    if (this.runtimeContextInvalidated && snapshot.source !== 'minecraft-data') throw new Error('Runtime registry context is revoked');
+    if (this.activeRegistryEpoch !== null && snapshot.source !== 'minecraft-data' && snapshot.registryEpoch !== this.activeRegistryEpoch) {
+      throw new Error('Snapshot registry epoch is stale for the active runtime context');
+    }
+    if (this.activeRuntimeEpoch !== null && snapshot.runtimeEpoch !== undefined && snapshot.runtimeEpoch !== this.activeRuntimeEpoch) {
+      throw new Error('Snapshot runtime epoch is stale for the active runtime context');
+    }
   }
 }

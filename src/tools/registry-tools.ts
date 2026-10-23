@@ -3,26 +3,41 @@ import { ToolFactory } from '../tool-factory.js';
 import type { RuntimeRegistryService } from '../services/runtime-registry-service.js';
 import type { RegistryKind, RegistrySourceName } from '../services/minecraft-registry-service.js';
 import type { NeoForgeBridgeIntegration } from '../bridge/neoforge-bridge-client.js';
+import type { BridgeCapabilities } from '../bridge/bridge-types.js';
 
 function jsonResponse(factory: ToolFactory, value: unknown) {
   return factory.createResponse(JSON.stringify(value, null, 2));
 }
 
 export function registerRegistryTools(factory: ToolFactory, runtimeRegistry: RuntimeRegistryService, bridgeIntegration?: NeoForgeBridgeIntegration): void {
+  const getCurrentContext = async () => {
+    const current = runtimeRegistry.getContext();
+    if (current.connectionMode === 'bridge-only' && current.bridgeAvailable) await bridgeIntegration?.validateBridgeOnlySession();
+    return runtimeRegistry.getContext();
+  };
   // Generic capability/discovery tools are additive; the original registry-* names remain stable.
   factory.registerTool(
     'minecraft-get-server-info',
     'Report the negotiated Minecraft connection and authenticated diagnostic bridge identity when available',
     {},
     async () => {
-      const context = runtimeRegistry.getContext();
+      const context = await getCurrentContext();
       return jsonResponse(factory, {
-        status: context.connected ? 'connected' : 'disconnected',
+        status: context.playerAvailable ? 'connected' : context.sessionAvailable ? 'bridge-only' : 'disconnected',
+        connectionMode: context.connectionMode,
+        playerAvailable: context.playerAvailable,
+        bridgeAvailable: context.bridgeAvailable,
         minecraftVersion: context.minecraftVersion,
         protocolVersion: context.protocolVersion,
         protocolNumber: context.protocolNumber,
-        endpoint: context.serverIdentity,
+        endpoint: context.minecraftEndpoint,
+        serverIdentity: context.serverIdentity,
         registryEpoch: context.registryEpoch,
+        runtimeEpoch: context.runtimeEpoch,
+        mineflayerSessionId: context.mineflayerSessionId,
+        mineflayerRegistryEpoch: context.mineflayerRegistryEpoch,
+        bridgeSessionId: context.bridgeSessionId,
+        sourceRegistryEpoch: context.sourceRegistryEpoch,
         bridge: context.bridgeSession ? {
           authenticated: context.bridgeSession.authenticated,
           serverIdentity: context.bridgeSession.serverIdentity,
@@ -41,31 +56,50 @@ export function registerRegistryTools(factory: ToolFactory, runtimeRegistry: Run
     'Report observed MCP, Mineflayer, registry and bridge capabilities without implying unverified server permissions',
     {},
     async () => {
-      const context = runtimeRegistry.getContext();
+      const context = await getCurrentContext();
       const snapshots = context.registryService?.getSnapshots() ?? [];
-      let bridgeCapabilities: unknown = null;
+      let bridgeCapabilities: BridgeCapabilities | null = null;
       let bridgeCapabilitiesError: string | null = null;
-      if (bridgeIntegration?.client.config.enabled && bridgeIntegration.client.config.mode === 'generic') {
+      if (bridgeIntegration?.adapter.supports('registry.dynamic-index') &&
+          (bridgeIntegration.adapter.state === 'disconnected' || bridgeIntegration.adapter.state === 'authenticated')) {
         try { bridgeCapabilities = await bridgeIntegration.capabilities(); }
         catch (error) { bridgeCapabilitiesError = error instanceof Error ? error.message : 'bridge-capability-query-failed'; }
       }
       const kinds = [...new Set(snapshots.flatMap((snapshot) => snapshot.availableRegistries))].sort();
       const connected = context.connected;
+      const bridgeConnected = context.bridgeAvailable;
       const bridgeSession = context.bridgeSession;
+      const adapter = bridgeIntegration?.adapter;
+      const bridgeAuthenticated = bridgeSession?.authenticated === true;
+      const inspectItemCapability = bridgeAuthenticated && adapter?.supports('capability.item-handler') === true;
+      const inspectEnergyCapability = bridgeAuthenticated && adapter?.supports('capability.energy-storage') === true;
+      const inspectFluidCapability = bridgeAuthenticated && adapter?.supports('capability.fluid-handler') === true;
       const capabilities = [
         { id: 'player.position.read', available: connected, source: 'mineflayer', limitation: connected ? null : 'minecraft-session-disconnected' },
         { id: 'player.inventory.read', available: connected, source: 'mineflayer', limitation: connected ? 'Only the bot inventory snapshot is exposed; container access requires an open menu.' : 'minecraft-session-disconnected' },
-        { id: 'world.block.read.loaded', available: connected, source: 'mineflayer', limitation: 'Only blocks in Mineflayer loaded chunks are readable.' },
+        { id: 'world.block.read.loaded', available: connected || bridgeConnected, source: bridgeConnected && !connected ? 'neoforge-bridge' : 'mineflayer', limitation: bridgeConnected && !connected ? 'Requires explicit dimension and coordinates; only already-loaded chunks are inspected.' : 'Only blocks in Mineflayer loaded chunks are readable.' },
         { id: 'world.block.write.place', available: connected, source: 'mineflayer', limitation: 'Server permissions, reach, inventory, collision and confirmation remain runtime preconditions.' },
         { id: 'world.block.write.break', available: connected, source: 'mineflayer', limitation: 'Server permissions, reach and tool requirements remain runtime preconditions.' },
         { id: 'registry.static', available: snapshots.some((snapshot) => snapshot.source === 'minecraft-data'), source: 'minecraft-data', limitation: 'Static version data is not proof of runtime numeric IDs on modded servers.' },
         { id: 'registry.runtime', available: snapshots.some((snapshot) => snapshot.source !== 'minecraft-data'), source: 'protocol-or-authenticated-bridge', limitation: 'Only registries and coverage explicitly present in the current session are available.' },
         { id: 'neoforge.bridge.authenticated', available: bridgeSession?.authenticated === true, source: 'neoforge-bridge', limitation: bridgeSession ? null : 'No authenticated local NeoForge bridge session.' },
-        { id: 'neoforge.capability.energy', available: bridgeSession !== null, source: 'neoforge-bridge', limitation: bridgeSession ? 'Readable only at loaded positions; mod capability semantics remain provider-defined.' : 'Bridge absent.' },
-        { id: 'neoforge.capability.fluid', available: Boolean((bridgeCapabilities as { fluidHandler?: boolean } | null)?.fluidHandler), source: 'neoforge-bridge', limitation: bridgeCapabilities ? null : (bridgeCapabilitiesError ?? 'Bridge absent or fluid capability not implemented.') },
+        { id: 'neoforge.capability.item', available: inspectItemCapability, inspectionAvailable: inspectItemCapability,
+          serverAdvertised: bridgeCapabilities?.itemHandler ?? null, availableAtPosition: null, source: 'neoforge-bridge',
+          limitation: inspectItemCapability ? 'Inspection is supported, but no target position was queried; per-position availability is unknown.' : 'No authenticated adapter inspection surface is available.' },
+        { id: 'neoforge.capability.energy', available: inspectEnergyCapability, inspectionAvailable: inspectEnergyCapability,
+          serverAdvertised: bridgeCapabilities?.energyStorage ?? null, availableAtPosition: null, source: 'neoforge-bridge',
+          limitation: inspectEnergyCapability ? 'Inspection is supported, but no target position was queried; per-position availability is unknown.' : 'No authenticated adapter inspection surface is available.' },
+        { id: 'neoforge.capability.fluid', available: inspectFluidCapability, inspectionAvailable: inspectFluidCapability,
+          serverAdvertised: bridgeCapabilities?.fluidHandler ?? null, availableAtPosition: null, source: 'neoforge-bridge',
+          limitation: inspectFluidCapability ? (bridgeCapabilities ? 'Server advertisement is separate from capability availability at a specific position.' : 'No target position was queried; per-position availability is unknown.')
+            : bridgeCapabilitiesError ?? 'The selected adapter does not expose fluid-handler inspection.' },
       ];
-      return jsonResponse(factory, { status: connected ? 'available' : 'partially-available', minecraftVersion: context.minecraftVersion,
-        registryEpoch: context.registryEpoch, registeredRegistryKinds: kinds, capabilities,
+      return jsonResponse(factory, { status: context.sessionAvailable ? (connected ? 'available' : 'bridge-only') : 'partially-available', connectionMode: context.connectionMode,
+        playerAvailable: context.playerAvailable, minecraftVersion: context.minecraftVersion,
+        registryEpoch: context.registryEpoch, runtimeEpoch: context.runtimeEpoch,
+        mineflayerSessionId: context.mineflayerSessionId, mineflayerRegistryEpoch: context.mineflayerRegistryEpoch,
+        bridgeSessionId: context.bridgeSessionId, sourceRegistryEpoch: context.sourceRegistryEpoch,
+        registeredRegistryKinds: kinds, capabilities,
         genericBridgeCapabilities: bridgeCapabilities, genericBridgeCapabilitiesError: bridgeCapabilitiesError });
     },
     { requiresConnection: false },
@@ -76,7 +110,7 @@ export function registerRegistryTools(factory: ToolFactory, runtimeRegistry: Run
     'List namespaces observed in available version/session registry snapshots; this is not a hard-coded mod list',
     {},
     async () => {
-      const context = runtimeRegistry.getContext();
+      const context = await getCurrentContext();
       if (!context.registryService || !context.minecraftVersion) return jsonResponse(factory, { status: 'unavailable', reason: 'registry-not-loaded', namespaces: [] });
       const snapshots = context.registryService.getSnapshots().filter((snapshot) => snapshot.minecraftVersion === context.minecraftVersion);
       const namespaces = new Map<string, Set<string>>();
@@ -103,7 +137,7 @@ export function registerRegistryTools(factory: ToolFactory, runtimeRegistry: Run
       offset: z.number().int().nonnegative().default(0), limit: z.number().int().positive().max(100).default(50),
     },
     async ({ kind, namespace, prefix, source, offset, limit }) => {
-      const context = runtimeRegistry.getContext();
+      const context = await getCurrentContext();
       if (!context.registryService || !context.minecraftVersion) return jsonResponse(factory, { status: 'unavailable', reason: 'registry-not-loaded', entries: [] });
       const snapshots = context.registryService.getSnapshots().filter((snapshot) => snapshot.minecraftVersion === context.minecraftVersion && (source === undefined || snapshot.source === source));
       const entries = snapshots.flatMap((snapshot) => snapshot.entries).filter((entry) =>
@@ -125,22 +159,33 @@ export function registerRegistryTools(factory: ToolFactory, runtimeRegistry: Run
     'Show Minecraft connection, registry source, coverage and bridge status',
     {},
     async () => {
-      const context = runtimeRegistry.getContext();
+      const context = await getCurrentContext();
       const snapshots = context.registryService?.getSnapshots() ?? [];
       return jsonResponse(factory, {
-        status: context.connected ? 'connected' : 'disconnected',
+        status: context.playerAvailable ? 'connected' : context.sessionAvailable ? 'bridge-only' : 'disconnected',
+        connectionMode: context.connectionMode,
+        playerAvailable: context.playerAvailable,
+        minecraftEndpoint: context.minecraftEndpoint,
         minecraftVersion: context.minecraftVersion,
         protocolVersion: context.protocolVersion,
         protocolNumber: context.protocolNumber,
         serverIdentity: context.serverIdentity,
         registryEpoch: context.registryEpoch,
+        runtimeEpoch: context.runtimeEpoch,
         sources: snapshots.map((snapshot) => ({
           source: snapshot.source,
+          authority: snapshot.authority ?? null,
           minecraftVersion: snapshot.minecraftVersion,
           registryEpoch: snapshot.registryEpoch ?? null,
+          runtimeEpoch: snapshot.runtimeEpoch ?? null,
           sourceRegistryEpoch: snapshot.sourceRegistryEpoch ?? null,
+          minecraftEndpoint: snapshot.minecraftEndpoint ?? null,
+          mineflayerSessionId: snapshot.mineflayerSessionId ?? null,
+          mineflayerRegistryEpoch: snapshot.mineflayerRegistryEpoch ?? null,
+          bridgeSessionId: snapshot.bridgeSessionId ?? null,
           serverIdentity: snapshot.serverIdentity ?? null,
           neoForgeVersion: snapshot.neoForgeVersion ?? null,
+          observedAt: snapshot.observedAt ?? null,
           availableRegistries: snapshot.availableRegistries.map((kind) => ({
             kind,
             completeness: snapshot.registryCoverage?.[kind] ?? 'partial',
@@ -148,6 +193,18 @@ export function registerRegistryTools(factory: ToolFactory, runtimeRegistry: Run
           })),
         })),
         bridgeAvailable: context.bridgeAvailable,
+        bridgeDiagnostic: bridgeIntegration ? (() => {
+          const status = bridgeIntegration.status();
+          return {
+            adapter: status.adapter,
+            adapterState: status.adapterState,
+            protocolVersion: status.protocolVersion,
+            enabled: status.enabled,
+            configured: status.configured,
+            authenticated: status.authenticated,
+            lastError: status.lastError,
+          };
+        })() : null,
         protocolDecode: context.protocolDecode,
         limitations: [
           'Modded mappings remain unresolved for registry entries that are absent from the authoritative snapshot of the current session.',
@@ -169,11 +226,11 @@ export function registerRegistryTools(factory: ToolFactory, runtimeRegistry: Run
       registryEpoch: z.string().optional(),
     },
     async ({ kind, namespacedId, numericId, registryEpoch }) => {
-      const context = runtimeRegistry.getContext();
+      const context = await getCurrentContext();
       if (!context.registryService || !context.minecraftVersion) {
         return jsonResponse(factory, {
           status: 'unavailable',
-          reason: 'registry-not-loaded',
+          reason: registryEpoch === undefined ? 'registry-not-loaded' : 'stale-context',
           kind,
           minecraftVersion: null,
           registryEpoch: registryEpoch ?? null,
@@ -183,7 +240,7 @@ export function registerRegistryTools(factory: ToolFactory, runtimeRegistry: Run
       const staticEpoch = `minecraft-data:${context.minecraftVersion}`;
       if (registryEpoch !== undefined && registryEpoch !== context.registryEpoch && registryEpoch !== staticEpoch) {
         return jsonResponse(factory, {
-          status: 'unavailable', reason: 'registry-not-loaded', kind,
+          status: 'unavailable', reason: 'stale-context', kind,
           minecraftVersion: context.minecraftVersion, registryEpoch,
           availableSources: context.registryService.getSnapshots().map((snapshot) => snapshot.source),
         });
@@ -199,7 +256,8 @@ export function registerRegistryTools(factory: ToolFactory, runtimeRegistry: Run
         ? {
           ...resolution,
           identityConfidence: resolution.provenance.source === 'minecraft-data' ? 'version-static' : 'session-observed',
-          runtimeNumericIdVerified: resolution.provenance.source !== 'minecraft-data' && resolution.provenance.registryEpoch === context.registryEpoch,
+          runtimeNumericIdVerified: resolution.provenance.authority === 'authenticated-runtime' &&
+            resolution.provenance.registryEpoch === context.registryEpoch && resolution.provenance.runtimeEpoch === context.runtimeEpoch,
         }
         : resolution);
     },
@@ -216,7 +274,7 @@ export function registerRegistryTools(factory: ToolFactory, runtimeRegistry: Run
       limit: z.number().int().positive().max(200).default(50),
     },
     async ({ kind, source, offset, limit }) => {
-      const context = runtimeRegistry.getContext();
+      const context = await getCurrentContext();
       if (!context.registryService) {
         return jsonResponse(factory, { status: 'unavailable', reason: 'registry-not-loaded', entries: [] });
       }
@@ -224,6 +282,7 @@ export function registerRegistryTools(factory: ToolFactory, runtimeRegistry: Run
       const entries = context.registryService.getEntries({
         ...(kind === undefined ? {} : { kind: kind as RegistryKind }),
         ...(source === undefined ? {} : { source: source as RegistrySourceName }),
+        ...(context.registryEpoch === null ? {} : { registryEpoch: context.registryEpoch }),
         offset,
         limit,
       });
@@ -233,8 +292,15 @@ export function registerRegistryTools(factory: ToolFactory, runtimeRegistry: Run
           .filter((registryKind) => kind === undefined || registryKind === kind)
           .map((registryKind) => ({
             source: snapshot.source,
+            authority: snapshot.authority ?? null,
             minecraftVersion: snapshot.minecraftVersion,
             registryEpoch: snapshot.registryEpoch ?? null,
+            runtimeEpoch: snapshot.runtimeEpoch ?? null,
+            sourceRegistryEpoch: snapshot.sourceRegistryEpoch ?? null,
+            minecraftEndpoint: snapshot.minecraftEndpoint ?? null,
+            bridgeSessionId: snapshot.bridgeSessionId ?? null,
+            serverIdentity: snapshot.serverIdentity ?? null,
+            observedAt: snapshot.observedAt ?? null,
             kind: registryKind,
             completeness: snapshot.registryCoverage?.[registryKind] ?? 'partial',
           })));

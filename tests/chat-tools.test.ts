@@ -1,4 +1,4 @@
-import test from 'ava';
+﻿import test from 'ava';
 import sinon from 'sinon';
 import { registerChatTools } from '../src/tools/chat-tools.js';
 import { ToolFactory } from '../src/tool-factory.js';
@@ -6,6 +6,7 @@ import { MessageStore } from '../src/message-store.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { BotConnection } from '../src/bot-connection.js';
 import type mineflayer from 'mineflayer';
+import { EventEmitter } from 'node:events';
 
 test('registerChatTools registers send-chat tool', (t) => {
   const mockServer = {
@@ -185,4 +186,36 @@ test('read-chat limits count to max messages', async (t) => {
   const result = await executor({ count: 200 });
 
   t.true(result.content[0].text.includes('10 chat message'));
+});
+
+test('Processia test profile rejects slash commands, empty messages and oversized chat before sending', async (t) => {
+  const server = { tool: sinon.stub() } as unknown as McpServer;
+  const connection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(server, connection);
+  const bot = Object.assign(new EventEmitter(), { chat: sinon.stub() }) as unknown as mineflayer.Bot;
+  registerChatTools(factory, () => bot, new MessageStore(), { profile: 'processia-test' });
+  const send = (server.tool as sinon.SinonStub).getCalls().find((call) => call.args[0] === 'send-chat')!.args[3] as (args: unknown) => Promise<{ content: { text: string }[]; isError?: boolean }>;
+  const slash = await send({ message: '/stop' });
+  const empty = await send({ message: '   ' });
+  const oversized = await send({ message: 'x'.repeat(257) });
+  t.true(slash.isError);
+  t.true(slash.content[0]!.text.includes('slash commands are not allowed'));
+  t.true(empty.isError);
+  t.true(oversized.isError);
+  t.false((bot.chat as unknown as sinon.SinonStub).called);
+});
+
+test('Processia chat only sends explicitly requested bounded text and disclaims server confirmation', async (t) => {
+  const server = { tool: sinon.stub() } as unknown as McpServer;
+  const connection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(server, connection);
+  const bot = Object.assign(new EventEmitter(), { chat: sinon.stub() }) as unknown as mineflayer.Bot;
+  registerChatTools(factory, () => bot, new MessageStore(), { profile: 'processia-test' });
+  const send = (server.tool as sinon.SinonStub).getCalls().find((call) => call.args[0] === 'send-chat')!.args[3] as (args: unknown) => Promise<{ content: { text: string }[]; isError?: boolean }>;
+  const result = await send({ message: 'hello' });
+  t.falsy(result.isError);
+  t.true((bot.chat as unknown as sinon.SinonStub).calledOnceWith('hello'));
+  const response = JSON.parse(result.content[0]!.text) as { status: string; serverConfirmed: boolean };
+  t.is(response.status, 'chat-send-requested');
+  t.false(response.serverConfirmed);
 });

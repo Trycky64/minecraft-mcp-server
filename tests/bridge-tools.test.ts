@@ -22,7 +22,7 @@ test('bridge-status is readable while disconnected and reports disabled without 
   const server = { tool: sinon.stub() } as unknown as McpServer;
   const connection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: false }) } as unknown as BotConnection;
   const runtime = new RuntimeRegistryService({ getBot: () => null, isConnected: () => false, getConfig: () => ({ host: '127.0.0.1', port: 25565 }) });
-  registerBridgeTools(new ToolFactory(server, connection), new NeoForgeBridgeIntegration(runtime, { enabled: false, url: null, secret: null, expectedServerIdentity: null, expectedMinecraftEndpoint: null, expectedNeoForgeVersion: null, timeoutMs: 1000, configurationError: null }));
+  registerBridgeTools(new ToolFactory(server, connection), new NeoForgeBridgeIntegration(runtime, { enabled: false, url: null, secret: null, expectedServerIdentity: null, expectedMinecraftEndpoint: null, expectedNeoForgeVersion: null, expectedMinecraftVersion: null, timeoutMs: 1000, configurationError: null }));
   const call = (server.tool as sinon.SinonStub).getCalls().find(value => value.args[0] === 'bridge-status')!;
   const result = await call.args[3]({});
   const status = JSON.parse(result.content[0].text);

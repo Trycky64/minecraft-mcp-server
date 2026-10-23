@@ -1,11 +1,29 @@
 import test from 'ava';
 import sinon from 'sinon';
-import { registerCraftingTools } from '../src/tools/crafting-tools.js';
+import { boundedCraftOperation, registerCraftingTools } from '../src/tools/crafting-tools.js';
 import { ToolFactory } from '../src/tool-factory.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { BotConnection } from '../src/bot-connection.js';
 import type mineflayer from 'mineflayer';
 import minecraftData from 'minecraft-data';
+
+test.serial('bounded craft timeout does not retry and holds a lock until the late operation settles', async (t) => {
+  const clock = sinon.useFakeTimers();
+  t.teardown(() => clock.restore());
+  const bot = {};
+  let resolveFirst!: () => void;
+  const firstPending = new Promise<void>((resolve) => { resolveFirst = resolve; });
+  const execute = sinon.stub().onFirstCall().returns(firstPending).onSecondCall().resolves();
+  const first = boundedCraftOperation(bot, execute, 100);
+  await clock.tickAsync(101);
+  await t.throwsAsync(first, { message: 'craft-timeout-result-uncertain-no-retry' });
+  await t.throwsAsync(boundedCraftOperation(bot, execute, 100), { message: 'craft-operation-pending-result-uncertain-no-retry' });
+  t.is(execute.callCount, 1);
+  resolveFirst();
+  await clock.tickAsync(0);
+  await boundedCraftOperation(bot, execute, 100);
+  t.is(execute.callCount, 2);
+});
 
 function flattenRecipes(recipes: unknown): unknown[] {
   const all: unknown[] = [];
@@ -273,7 +291,21 @@ test('craft-item crafts successfully when ingredients are available', async (t) 
 
   t.true(craftStub.called);
   t.false(!!result.isError);
-  t.true(result.content[0].text.toLowerCase().includes('successfully crafted'));
+  const response = JSON.parse(result.content[0].text) as { status: string; serverConfirmed: boolean; completedOperations: number };
+  t.is(response.status, 'craft-request-completed-client-side');
+  t.false(response.serverConfirmed);
+  t.is(response.completedOperations, 1);
+});
+
+test('craft-item rejects an excessive amount before invoking gameplay logic', async (t) => {
+  const mockServer = { tool: sinon.stub() } as unknown as McpServer;
+  const mockConnection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
+  const factory = new ToolFactory(mockServer, mockConnection);
+  registerCraftingTools(factory, () => { throw new Error('gameplay handler must not run'); });
+  const handler = (mockServer.tool as sinon.SinonStub).getCalls().find((call) => call.args[0] === 'craft-item')!.args[3] as (args: unknown) => Promise<{ content: { text: string }[]; isError?: boolean }>;
+  const result = await handler({ outputItem: 'stick', amount: 17 });
+  t.true(result.isError);
+  t.true(/less than or equal to 16|maximum: 16/i.test(result.content[0]!.text));
 });
 
 test('uses real minecraft-data recipes for version 1.21.8', async (t) => {

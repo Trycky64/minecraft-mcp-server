@@ -1,5 +1,5 @@
 import test from 'ava';
-import { log } from '../src/logger.js';
+import { log, logEvent } from '../src/logger.js';
 
 test('log writes to stderr', (t) => {
   const originalWrite = process.stderr.write;
@@ -122,7 +122,7 @@ test('log handles special characters in message', (t) => {
   process.stderr.write = originalWrite;
 });
 
-test('log handles multiline message', (t) => {
+test('log flattens untrusted multiline messages', (t) => {
   const originalWrite = process.stderr.write;
   let capturedOutput = '';
   
@@ -134,10 +134,28 @@ test('log handles multiline message', (t) => {
   const multilineMessage = 'Line 1\nLine 2\nLine 3';
   log('info', multilineMessage);
   
-  t.true(capturedOutput.includes(multilineMessage));
-  t.true(capturedOutput.includes('Line 1\nLine 2\nLine 3'));
+  t.true(capturedOutput.includes('Line 1 Line 2 Line 3'));
+  t.is(capturedOutput.trimEnd().split('\n').length, 1);
   
   process.stderr.write = originalWrite;
+});
+
+test('logs redact credentials, bearer headers, credential URLs and keep structured fields allowlisted', (t) => {
+  const originalWrite = process.stderr.write;
+  const outputs: string[] = [];
+  process.stderr.write = ((chunk: string | Uint8Array) => { outputs.push(chunk.toString()); return true; }) as typeof process.stderr.write;
+  const secret = 'very-secret-token-123456';
+  log('warn', `Authorization: Bearer ${secret}; secret=${secret}; sessionId=private-session-id; https://user:${secret}@localhost/path`);
+  logEvent('error', 'bridge', 'registry-refresh', { code: 'bridge-timeout', outcome: 'timeout', correlationId: 'b138a926-41d4-4a49-9a0e-4ee8ae910a50' });
+  logEvent('error', 'bridge', 'failed', { correlationId: secret, code: secret });
+  process.stderr.write = originalWrite;
+  const combined = outputs.join('');
+  t.false(combined.includes(secret));
+  t.false(combined.includes('private-session-id'));
+  t.false(combined.includes(secret));
+  t.true(combined.includes('[redacted]'));
+  t.true(combined.includes('"correlationId":"b138a926-41d4-4a49-9a0e-4ee8ae910a50"'));
+  t.false(combined.includes('"secret"'));
 });
 
 test('log output format is consistent', (t) => {
