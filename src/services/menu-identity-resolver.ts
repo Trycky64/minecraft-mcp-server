@@ -118,6 +118,11 @@ export function resolveMenuIdentity(
     } else if (resolution.status === 'ambiguous') {
       canUseVersionTable = false;
       base = { ...base, reason: 'ambiguous-runtime-menu-mapping' };
+    } else if (resolution.reason === 'identifier-not-found') {
+      // A complete runtime menu registry proves this server does not use the ID;
+      // the static vanilla table would contradict the server.
+      canUseVersionTable = false;
+      base = { ...base, reason: 'menu-type-id-absent-from-complete-runtime-registry' };
     }
   }
 

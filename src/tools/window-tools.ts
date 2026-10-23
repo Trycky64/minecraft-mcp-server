@@ -42,6 +42,40 @@ function contextMatchesBinding(context: RuntimeRegistryContext | null, binding: 
   return Object.keys(current).every(key => current[key as keyof MenuWindowRuntimeBinding] === binding[key as keyof MenuWindowRuntimeBinding]);
 }
 
+/**
+ * A menu observed under a runtime binding is only named in that same context.
+ * Once the server, bridge or registry generation changes, neither the runtime
+ * registry nor the static vanilla table may reinterpret its numeric type ID.
+ */
+function resolveObservedMenuIdentity(
+  rawMenuTypeId: number | null,
+  version: string | null,
+  mineflayerTypeHint: string | number,
+  binding: MenuWindowRuntimeBinding | null,
+  boundContext: RuntimeRegistryContext | null,
+): ReturnType<typeof resolveMenuIdentity> {
+  if (binding && !boundContext) {
+    return {
+      identity: { status: 'unresolved', reason: 'runtime-context-changed-since-menu-was-observed', rawNumericTypeId: rawMenuTypeId, mineflayerTypeHint },
+      evidence: null,
+    };
+  }
+  return resolveMenuIdentity(rawMenuTypeId, version, mineflayerTypeHint, boundContext, menuVersion =>
+    loadPrismarineWindows(menuVersion).windows as Record<string, VersionedMenuTypeDefinition | null>);
+}
+
+/** Names a Mineflayer slot item only through the authenticated runtime registry bound to this window. */
+function mineflayerSlotIdentity(item: { name: string; type: number }, version: string | null, boundContext: RuntimeRegistryContext | null) {
+  const runtimeItem = boundContext && version ? resolveAuthenticatedRuntimeRegistryId('item', item.type, version, boundContext) : null;
+  return {
+    namespacedId: runtimeItem?.namespacedId ?? null,
+    identity: runtimeItem ? 'authenticated-runtime-registry' : item.name === 'unknown' ? 'unresolved' : 'mineflayer-name-only',
+    identityProvenance: runtimeItem?.provenance ?? null,
+    mineflayerNameStatus: !runtimeItem ? 'not-checked-against-runtime-registry'
+      : runtimeItem.namespacedId === `minecraft:${item.name}` ? 'matches-runtime-registry' : 'contradicts-runtime-registry',
+  };
+}
+
 interface MenuDescription {
   identity: Record<string, unknown>;
   identityEvidence: MenuIdentityEvidence | null;
@@ -65,8 +99,7 @@ function describeMenu(
   const rawMenuTypeId = observation?.kind === 'container' ? observation.rawMenuTypeId : null;
   const boundContext = contextMatchesBinding(registryContext, observation?.runtimeBinding ?? null) ? registryContext : null;
   const version = observation?.runtimeBinding?.minecraftVersion ?? boundContext?.minecraftVersion ?? bot.version;
-  const resolved = resolveMenuIdentity(rawMenuTypeId, version, window.type, boundContext, menuVersion =>
-    loadPrismarineWindows(menuVersion).windows as Record<string, VersionedMenuTypeDefinition | null>);
+  const resolved = resolveObservedMenuIdentity(rawMenuTypeId, version, window.type, observation?.runtimeBinding ?? null, boundContext);
   const observedSlotCount = observation?.completeContentObserved && observation.observedSlotCount === window.slots.length
     ? observation.observedSlotCount : -1;
   const resolvedLayout = layoutRegistry.resolve(resolved.evidence, {
@@ -111,6 +144,8 @@ function windowSnapshot(window: Window | null, bot: Bot, registryContext: Runtim
   const resolvedCapabilities = menu.layout as Record<string, unknown> & { capabilities?: { shiftClick?: boolean; drag?: boolean } };
   const synchronized = observation?.completeContentObserved === true && observation.observedSlotCount === window.slots.length;
   const contextCurrent = contextMatchesBinding(registryContext, observation?.runtimeBinding ?? null);
+  const boundContext = contextCurrent ? registryContext : null;
+  const version = observation?.runtimeBinding?.minecraftVersion ?? boundContext?.minecraftVersion ?? bot.version;
   return {
     id: window.id,
     generation: observation?.generation ?? null,
@@ -159,7 +194,7 @@ function windowSnapshot(window: Window | null, bot: Bot, registryContext: Runtim
       rawNumericId: window.selectedItem.type,
       count: window.selectedItem.count,
       components: toBoundedJsonValue((window.selectedItem as unknown as { components?: unknown }).components),
-      identity: window.selectedItem.name === 'unknown' ? 'unresolved' : 'mineflayer-name-only',
+      ...mineflayerSlotIdentity(window.selectedItem, version, boundContext),
     } : null,
     slots: window.slots.map((item, slot) => item ? {
       slot,
@@ -168,7 +203,7 @@ function windowSnapshot(window: Window | null, bot: Bot, registryContext: Runtim
       count: item.count,
       metadata: item.metadata,
       components: toBoundedJsonValue((item as unknown as { components?: unknown }).components),
-      identity: item.name === 'unknown' ? 'unresolved' : 'mineflayer-name-only',
+      ...mineflayerSlotIdentity(item, version, boundContext),
       role: slotRole(menu.layout, slot),
     } : { slot, empty: true, role: slotRole(menu.layout, slot) }),
   };
@@ -182,10 +217,9 @@ function rawWindowSnapshot(
 ): Record<string, unknown> {
   const boundContext = contextMatchesBinding(context, raw.runtimeBinding) ? context : null;
   const version = raw.runtimeBinding?.minecraftVersion ?? boundContext?.minecraftVersion ?? bot.version;
-  const identity = raw.kind === 'container' ? resolveMenuIdentity(
-    raw.rawMenuTypeId, version, raw.rawMenuTypeId ?? 'unknown', boundContext,
-    menuVersion => loadPrismarineWindows(menuVersion).windows as Record<string, VersionedMenuTypeDefinition | null>,
-  ) : { identity: { status: 'known-protocol-window-kind', kind: 'horse-entity-inventory' }, evidence: null };
+  const identity = raw.kind === 'container'
+    ? resolveObservedMenuIdentity(raw.rawMenuTypeId, version, raw.rawMenuTypeId ?? 'unknown', raw.runtimeBinding, boundContext)
+    : { identity: { status: 'known-protocol-window-kind', kind: 'horse-entity-inventory' }, evidence: null };
   const layoutResolution = layoutRegistry.resolve(identity.evidence, {
     observedSlotCount: raw.contentStatus === 'complete-packet-observed' ? raw.observedSlotCount ?? -1 : -1,
   });

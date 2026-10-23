@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { NeoForgeBridgeIntegration } from '../bridge/neoforge-bridge-client.js';
 import { ToolFactory } from '../tool-factory.js';
 import type { RuntimeRegistryService } from '../services/runtime-registry-service.js';
-import { bridgeErrorPolicy, normalizeBridgeError } from '../bridge/bridge-adapter-contract.js';
+import { bridgeErrorPolicy, normalizeBridgeError, type BridgeCapability } from '../bridge/bridge-adapter-contract.js';
 
 function json(factory: ToolFactory, value: unknown) { return factory.createResponse(JSON.stringify(value, null, 2)); }
 function failure(factory: ToolFactory, error: unknown) {
@@ -42,11 +42,20 @@ export function registerBridgeTools(factory: ToolFactory, bridge: NeoForgeBridge
   }, async (request) => {
     try {
       const result = await bridge.inspectBlock(request);
+      // A missing list is unknown, never an empty or zero-valued capability.
+      const report = (capability: BridgeCapability, rows: unknown[] | undefined) => !bridge.adapter.supports(capability)
+        ? 'not-supported-by-adapter' : rows === undefined ? 'not-present-in-bridge-response'
+          : rows.length === 0 ? 'empty-list-in-bridge-response' : 'entries-reported';
       return json(factory, { status: 'available', readOnly: true, serverIdentity: result.serverIdentity,
         registryEpoch: result.registryEpoch, dimension: result.dimension, x: result.x, y: result.y, z: result.z,
         itemCapabilities: result.itemCapabilities ?? null, energyCapabilities: result.energyCapabilities ?? null,
         fluidCapabilities: result.fluidCapabilities ?? null,
-        caveat: 'Capabilities are queried without insert, extract, fill, drain or simulation calls.' });
+        capabilityReports: {
+          item: report('capability.item-handler', result.itemCapabilities),
+          energy: report('capability.energy-storage', result.energyCapabilities),
+          fluid: report('capability.fluid-handler', result.fluidCapabilities),
+        },
+        caveat: 'Capabilities are queried without insert, extract, fill, drain or simulation calls. A null list means the value is unknown, not zero.' });
     } catch (error) { return failure(factory, error); }
   }, { requiresConnection: false });
 
