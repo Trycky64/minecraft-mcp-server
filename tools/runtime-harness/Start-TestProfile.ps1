@@ -19,7 +19,7 @@ function Test-ChildPath([string]$Parent, [string]$Child) {
   return Test-HarnessPathWithin -Parent $Parent -Child $Child
 }
 function Assert-Port([int]$Port, [string]$Name) {
-  if ($Port -lt 1 -or $Port -gt 65535 -or $Port -eq 25565) { throw "$Name-port-invalid-or-forbidden" }
+  if ($Port -lt 1 -or $Port -gt 65535 -or $Port -eq 25565 -or $Port -eq 25665) { throw "$Name-port-invalid-or-forbidden" }
   $listener = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
   $occupied = if ($listener.Count -gt 0) { @($Port) } else { @() }
   $check = Test-HarnessPortPolicy -HostName '127.0.0.1' -MinecraftPort $Port -OccupiedPorts $occupied
@@ -64,6 +64,7 @@ function Wait-PreservedManagedProcess([Diagnostics.Process]$ManagedProcess, [Sys
 
 if (-not $AuthorizeStart) { throw 'server-start-disabled: pass -AuthorizeStart only in a separately authorized runtime mission' }
 if ($MinecraftPort -eq 25565) { throw 'personal-server-port-forbidden' }
+if ($MinecraftPort -eq 25665) { throw 'historical-test-server-port-forbidden' }
 Assert-Port $MinecraftPort 'minecraft'
 if ($Profile -eq 'vanilla' -and $PSBoundParameters.ContainsKey('BridgePort')) { throw 'vanilla-profile-does-not-use-bridge-port' }
 if ($Profile -ne 'vanilla') {
@@ -80,7 +81,8 @@ if ($Profile -ne 'vanilla') {
 $root = Resolve-FullPath $HarnessRoot
 $template = Resolve-FullPath $TemplateDirectory
 $repo = Resolve-FullPath (Join-Path $PSScriptRoot '..\..')
-if (Test-ChildPath $repo $root -or (Test-ChildPath $root $repo) -or $root -eq $repo) { throw 'harness-root-must-be-disjoint-from-repository' }
+# Each call is parenthesized: unparenthesized, PowerShell passes '-or ...' as extra arguments and skips the last two checks.
+if ((Test-ChildPath $repo $root) -or (Test-ChildPath $root $repo) -or $root -eq $repo) { throw 'harness-root-must-be-disjoint-from-repository' }
 if (-not (Test-ChildPath $root $template)) { throw 'template-must-be-staged-under-dedicated-harness-root' }
 if (-not (Test-Path -LiteralPath $template -PathType Container)) { throw 'profile-template-not-found' }
 if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'harness-root-must-be-prepared-separately' }

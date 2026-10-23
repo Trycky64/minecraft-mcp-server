@@ -247,6 +247,7 @@ function Test-HarnessPortPolicy {
     if ($null -eq $port) { if ($name -eq 'minecraft') { $errors.Add('minecraft-port-required') }; continue }
     if ($port -lt 1 -or $port -gt 65535) { $errors.Add("$name-port-invalid"); continue }
     if ($port -eq 25565) { $errors.Add('personal-server-port-forbidden') }
+    if ($port -eq 25665) { $errors.Add('historical-test-server-port-forbidden') }
     if ($OccupiedPorts -contains $port) { $errors.Add("$name-port-occupied") }
   }
   $selected = @($ports | Where-Object { $null -ne $_.value } | ForEach-Object { [int]$_.value })

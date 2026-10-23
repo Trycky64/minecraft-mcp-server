@@ -14,7 +14,7 @@ $leasePath = Join-Path $run 'runtime-harness-lease.json'
 if (-not (Test-Path -LiteralPath $leasePath -PathType Leaf)) { throw 'managed-process-lease-not-found' }
 $lease = Get-Content -LiteralPath $leasePath -Raw | ConvertFrom-Json
 if ($lease.schemaVersion -ne 2 -or $lease.workingDirectory -ne $run -or $lease.status -notin @('running','stop-timeout-process-preserved','supervisor-failure-process-preserved')) { throw 'managed-process-lease-invalid-or-inactive' }
-if ($lease.minecraftPort -eq 25565 -or $lease.minecraftHost -ne '127.0.0.1') { throw 'lease-target-is-forbidden' }
+if ($lease.minecraftPort -eq 25565 -or $lease.minecraftPort -eq 25665 -or $lease.minecraftHost -ne '127.0.0.1') { throw 'lease-target-is-forbidden' }
 $expected = [pscustomobject]@{ pid = [int]$lease.pid; startedAt = [string]$lease.startedAt; executablePath = [string]$lease.executablePath; commandLine = [string]$lease.commandLine; workingDirectory = [string]$lease.workingDirectory }
 if (-not (Test-HarnessProcessIdentity -Expected $expected)) { throw 'managed-process-identity-mismatch' }
 

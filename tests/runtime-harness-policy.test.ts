@@ -31,6 +31,8 @@ test('refuses missing authorization and implicit, public, invalid, or forbidden 
   t.true(validateRuntimeTarget({ ...base, bridgePort: 26001 }).errors.includes('bridge-port-collides-with-minecraft'));
   t.true(validateRuntimeTarget({ ...base, bridgePort: 26002, guiPort: 26002 }).errors.includes('gui-port-collides-with-bridge'));
   t.true(validateRuntimeTarget({ ...base, bridgePort: 25565 }).errors.includes('personal-server-port-forbidden'));
+  t.true(validateRuntimeTarget({ ...base, minecraftPort: 25665 }).errors.includes('historical-test-server-port-forbidden'));
+  t.true(validateRuntimeTarget({ ...base, guiPort: 25665 }).errors.includes('historical-test-server-port-forbidden'));
 });
 
 test('requires new run directories under a dedicated root outside the repository', (t) => {

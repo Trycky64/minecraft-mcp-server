@@ -34,10 +34,10 @@ $env:MINECRAFT_MCP_BRIDGE_ENABLED = 'true'
 $env:MINECRAFT_MCP_BRIDGE_URL = 'http://127.0.0.1:25677'
 $env:MINECRAFT_MCP_BRIDGE_CREDENTIAL_FILE = 'C:\private\minecraft-mcp-bridge.credentials.json'
 $env:MINECRAFT_MCP_BRIDGE_MINECRAFT_VERSION = '1.21.1'
-npx minecraft-mcp-server --host 127.0.0.1 --port 25665 --connection-mode bridge-only --bridge-minecraft-version 1.21.1
+npx minecraft-mcp-server --host 127.0.0.1 --port <isolated-test-port> --connection-mode bridge-only --bridge-minecraft-version 1.21.1
 ```
 
-The ports above are examples for an isolated development server. Never replace the endpoint with a public or personal server without explicit authorization.
+The ports above are examples for an isolated development server; choose the Minecraft port explicitly. Ports 25565 (personal) and 25665 (retired historical test server) must not be used. Never replace the endpoint with a public or personal server without explicit authorization.
 
 Linux/bash uses the same variables and CLI flags:
 
@@ -46,7 +46,7 @@ export MINECRAFT_MCP_BRIDGE_ENABLED=true
 export MINECRAFT_MCP_BRIDGE_URL=http://127.0.0.1:25677
 export MINECRAFT_MCP_BRIDGE_CREDENTIAL_FILE=/run/user/$(id -u)/minecraft-mcp-bridge.credentials.json
 export MINECRAFT_MCP_BRIDGE_MINECRAFT_VERSION=1.21.1
-npx minecraft-mcp-server --host 127.0.0.1 --port 25665 --connection-mode bridge-only --bridge-minecraft-version 1.21.1
+npx minecraft-mcp-server --host 127.0.0.1 --port <isolated-test-port> --connection-mode bridge-only --bridge-minecraft-version 1.21.1
 ```
 
 The credential path must refer to the actual owner-only file created by the bridge. Do not copy the secret into a command line, shell history or MCP configuration.

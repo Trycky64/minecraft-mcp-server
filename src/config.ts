@@ -27,7 +27,7 @@ export function parseConfig(argv: string[] = hideBin(process.argv)): ServerConfi
     .option('profile', {
       type: 'string',
       choices: ['processia-test'] as const,
-      description: 'Apply strict Processia test endpoint safeguards',
+      description: 'Apply strict test endpoint safeguards (loopback only; ports 25565 and 25665 refused; no default target)',
     })
     .option('connection-mode', {
       type: 'string',
@@ -52,9 +52,7 @@ export function parseConfig(argv: string[] = hideBin(process.argv)): ServerConfi
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error('invalid-minecraft-port: --port must be an integer from 1 to 65535');
   }
-  if (parsed.profile === 'processia-test' && (host !== '127.0.0.1' || port !== 25665 || username !== 'CodexBot')) {
-    throw new Error('processia-test-target-refused: expected --host 127.0.0.1 --port 25665 --username CodexBot');
-  }
+  assertTestProfileTarget(parsed.profile, host, port);
   const connectionMode = parsed.connectionMode;
   const bridgeMinecraftVersion = parsed.bridgeMinecraftVersion;
   return {
@@ -65,6 +63,27 @@ export function parseConfig(argv: string[] = hideBin(process.argv)): ServerConfi
     connectionMode: connectionMode === 'bridge-only' || connectionMode === 'auto' ? connectionMode : 'bot',
     bridgeMinecraftVersion: bridgeMinecraftVersion ?? null,
   };
+}
+
+/** Personal server default and the retired historical test server; test profiles never target them. */
+export const TEST_PROFILE_FORBIDDEN_PORTS: ReadonlyMap<number, string> = new Map([
+  [25565, 'personal-server-port-forbidden'],
+  [25665, 'historical-test-server-port-forbidden'],
+]);
+
+/**
+ * Test profiles add restrictions on top of an explicit target; they never
+ * supply a host or port. Unprofiled generic targets are left unchanged.
+ */
+export function assertTestProfileTarget(profile: ServerConfig['profile'], host: string, port: number): void {
+  if (profile !== 'processia-test') return;
+  if (host !== '127.0.0.1') {
+    throw new Error('processia-test-target-refused: loopback-host-required; pass --host 127.0.0.1 with an explicitly chosen isolated test port');
+  }
+  const forbidden = TEST_PROFILE_FORBIDDEN_PORTS.get(port);
+  if (forbidden) {
+    throw new Error(`processia-test-target-refused: ${forbidden}; port ${port} is never used by test profiles, choose another explicit isolated port`);
+  }
 }
 
 export function shouldAutoFallbackToBridge(input: {

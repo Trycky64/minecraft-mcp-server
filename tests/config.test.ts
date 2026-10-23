@@ -1,5 +1,9 @@
 import test from 'ava';
+import sinon from 'sinon';
 import { parseConfig, shouldAutoFallbackToBridge } from '../src/config.js';
+import { createBridgeAdapter } from '../src/bridge/bridge-adapters.js';
+import { normalizeBridgeError } from '../src/bridge/bridge-adapter-contract.js';
+import { NeoForgeBridgeClient, readBridgeClientConfig } from '../src/bridge/neoforge-bridge-client.js';
 
 const target = ['--host', 'example.net', '--port', '25566', '--username', 'TestBot'];
 
@@ -33,12 +37,51 @@ test('parseConfig accepts explicit bridge-only mode and expected Minecraft versi
   t.is(typeof config.port, 'number');
 });
 
-test('processia-test profile pins loopback endpoint and identity and refuses port 25565', (t) => {
-  const config = parseConfig(['--profile', 'processia-test', '--host', '127.0.0.1', '--port', '25665', '--username', 'CodexBot']);
+test('processia-test profile has no implicit target and still requires an explicit host, port, and username', (t) => {
+  t.throws(() => parseConfig(['--profile', 'processia-test']), { message: /explicit-minecraft-target-required/ });
+  t.throws(() => parseConfig(['--profile', 'processia-test', '--host', '127.0.0.1', '--username', 'CodexBot']), { message: /explicit-minecraft-target-required/ });
+  t.throws(() => parseConfig(['--profile', 'processia-test', '--port', '26001', '--username', 'CodexBot']), { message: /explicit-minecraft-target-required/ });
+});
+
+test('processia-test profile refuses the personal port, the historical test port, and non-loopback hosts', (t) => {
+  const profile = ['--profile', 'processia-test', '--username', 'CodexBot'];
+  t.throws(() => parseConfig([...profile, '--host', '127.0.0.1', '--port', '25565']), { message: /processia-test-target-refused: personal-server-port-forbidden/ });
+  t.throws(() => parseConfig([...profile, '--host', '127.0.0.1', '--port', '25665']), { message: /processia-test-target-refused: historical-test-server-port-forbidden/ });
+  t.throws(() => parseConfig([...profile, '--host', 'localhost', '--port', '26001']), { message: /processia-test-target-refused: loopback-host-required/ });
+  t.throws(() => parseConfig([...profile, '--host', 'example.net', '--port', '26001']), { message: /processia-test-target-refused: loopback-host-required/ });
+});
+
+test('processia-test profile keeps an explicit isolated loopback target unchanged', (t) => {
+  const config = parseConfig(['--profile', 'processia-test', '--host', '127.0.0.1', '--port', '26001', '--username', 'OtherBot']);
   t.is(config.profile, 'processia-test');
-  t.throws(() => parseConfig(['--profile', 'processia-test', '--host', '127.0.0.1', '--port', '25565', '--username', 'CodexBot']), { message: /processia-test-target-refused/ });
-  t.throws(() => parseConfig(['--profile', 'processia-test', '--host', 'localhost', '--port', '25665', '--username', 'CodexBot']), { message: /processia-test-target-refused/ });
-  t.throws(() => parseConfig(['--profile', 'processia-test', '--host', '127.0.0.1', '--port', '25665', '--username', 'OtherBot']), { message: /processia-test-target-refused/ });
+  t.is(config.host, '127.0.0.1');
+  t.is(config.port, 26001);
+  t.is(config.username, 'OtherBot');
+  t.is(config.connectionMode, 'bot');
+});
+
+test('profile restrictions do not apply to explicit generic targets', (t) => {
+  const config = parseConfig(['--host', 'mc.example.net', '--port', '25565', '--username', 'TestBot']);
+  t.is(config.profile, undefined);
+  t.is(config.port, 25565);
+});
+
+test('the test profile does not enable the Processia bridge adapter implicitly', async (t) => {
+  const config = parseConfig(['--profile', 'processia-test', '--host', '127.0.0.1', '--port', '26001', '--username', 'CodexBot']);
+  t.is(config.profile, 'processia-test');
+  const bridge = readBridgeClientConfig({});
+  t.false(bridge.enabled);
+  t.is(bridge.secret, null);
+  const adapter = createBridgeAdapter(bridge, (bridgeConfig) => new NeoForgeBridgeClient(bridgeConfig));
+  t.is(adapter.state, 'disabled');
+  const fetchStub = sinon.stub(globalThis, 'fetch').rejects(new Error('network-must-not-be-used'));
+  try {
+    const handshakeError = await t.throwsAsync(adapter.handshake('1.21.1', '127.0.0.1:26001'));
+    t.is(normalizeBridgeError(handshakeError).code, 'bridge-disabled');
+    await t.throwsAsync(adapter.inspectMachine({ dimension: 'minecraft:overworld', x: 0, y: 64, z: 0 }));
+    t.is(adapter.session, null);
+    t.false(fetchStub.called);
+  } finally { fetchStub.restore(); }
 });
 
 test('parseConfig refuses invalid ports', (t) => {

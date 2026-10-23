@@ -3,6 +3,7 @@ import pathfinderPkg from 'mineflayer-pathfinder';
 const { pathfinder, Movements } = pathfinderPkg;
 import minecraftData from 'minecraft-data';
 import { monitorProtocolDecode, type ProtocolClientLike } from './services/protocol-decode-monitor.js';
+import { assertTestProfileTarget } from './config.js';
 
 type ConnectionState = 'connected' | 'connecting' | 'disconnected';
 
@@ -35,9 +36,7 @@ export class BotConnection {
     if (!host || !username || !Number.isInteger(config.port) || config.port < 1 || config.port > 65535) {
       throw new Error('explicit-minecraft-target-required: host, port, and username must be configured');
     }
-    if (config.profile === 'processia-test' && (host !== '127.0.0.1' || config.port !== 25665 || username !== 'CodexBot')) {
-      throw new Error('processia-test-target-refused: expected 127.0.0.1:25665 as CodexBot');
-    }
+    assertTestProfileTarget(config.profile, host, config.port);
     this.config = { ...config, host, username };
     this.callbacks = callbacks;
     this.reconnectDelayMs = reconnectDelayMs;

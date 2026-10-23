@@ -11,7 +11,7 @@ Le code courant a été validé sur Windows x64 (Node 26.8.1) et Linux x64 sous 
 
 ## Validation Mission 10
 
-Le socle MCP 2.0.4 a été compilé et testé sur Windows x64 et Ubuntu 24.04 x64 sous WSL (Node portable 22.16.0, npm 10.9.2). Ce test Linux ne valide pas un serveur Minecraft Linux ni ARM64. Les profils de test utilisent uniquement les ports isolés 25665 (jeu), 25677 (bridge) et 25678 (GUI). Le parcours GUI expérimental requiert un client Processia instrumenté distinct et un bridge authentifié; voir [MISSION10_FINAL_REPORT.md](MISSION10_FINAL_REPORT.md).
+Le socle MCP 2.0.4 a été compilé et testé sur Windows x64 et Ubuntu 24.04 x64 sous WSL (Node portable 22.16.0, npm 10.9.2). Ce test Linux ne valide pas un serveur Minecraft Linux ni ARM64. Les profils de test de Mission 10 utilisaient les ports isolés 25665 (jeu), 25677 (bridge) et 25678 (GUI). Depuis Mission 29.0, le port 25665 est réservé au serveur historique et refusé par le profil `processia-test` et le banc runtime; tout port de test doit être choisi explicitement. Le parcours GUI expérimental requiert un client Processia instrumenté distinct et un bridge authentifié; voir [MISSION10_FINAL_REPORT.md](MISSION10_FINAL_REPORT.md).
 
 ## Prérequis
 
@@ -27,7 +27,7 @@ Depuis une copie du dépôt :
 ```sh
 npm ci
 npm run build
-npm start -- --host 127.0.0.1 --port 25665 --username MCPBot
+npm start -- --host 127.0.0.1 --port <port-de-test-isolé> --username MCPBot
 ```
 
 Le port ci-dessus est un exemple de serveur Minecraft cible, pas un port à ouvrir par le MCP. Le serveur MCP utilise stdio pour le transport MCP. Pour Claude Code/Codex, configurer un processus MCP stdio local selon la documentation du client. Ne pas stocker de secret dans `.mcp.json`.

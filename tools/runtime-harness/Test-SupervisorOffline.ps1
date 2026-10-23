@@ -113,6 +113,7 @@ try {
   Assert-That ((Test-HarnessPortPolicy -HostName '0.0.0.0' -MinecraftPort 26001).errors -contains 'loopback-only-required') 'non-loopback refused'
   Assert-That ((Test-HarnessPortPolicy -HostName '127.0.0.1' -MinecraftPort $null).errors -contains 'minecraft-port-required') 'missing port refused'
   Assert-That ((Test-HarnessPortPolicy -HostName '127.0.0.1' -MinecraftPort 25565).errors -contains 'personal-server-port-forbidden') 'forbidden port refused without socket access'
+  Assert-That ((Test-HarnessPortPolicy -HostName '127.0.0.1' -MinecraftPort 26001 -BridgePort 25665).errors -contains 'historical-test-server-port-forbidden') 'historical test port refused without socket access'
   Assert-That ((Test-HarnessPortPolicy -HostName '127.0.0.1' -MinecraftPort 26001 -BridgePort 26001).errors -contains 'service-port-collision') 'colliding service ports refused'
   Assert-That ((Test-HarnessPortPolicy -HostName '127.0.0.1' -MinecraftPort 26001 -OccupiedPorts @(26001)).errors -contains 'minecraft-port-occupied') 'occupied port refused'
   $sub = Join-Path $testRoot 'root\runs\one'; New-Item -ItemType Directory -Path $sub -Force | Out-Null

@@ -16,14 +16,16 @@ test('constructor initializes with correct state', (t) => {
   t.false(connection.isConnected());
 });
 
-test('connection rejects missing or unsafe Processia targets and protects the validated target from caller mutation', (t) => {
+test('connection rejects missing or unsafe test-profile targets and protects the validated target from caller mutation', (t) => {
   const callbacks = { onLog: sinon.stub(), onChatMessage: sinon.stub() };
-  t.throws(() => new BotConnection({ host: '', port: 25665, username: 'CodexBot' }, callbacks), { message: /explicit-minecraft-target-required/ });
-  t.throws(() => new BotConnection({ host: '127.0.0.1', port: 25565, username: 'CodexBot', profile: 'processia-test' }, callbacks), { message: /processia-test-target-refused/ });
-  const connection = new BotConnection({ host: '127.0.0.1', port: 25665, username: 'CodexBot', profile: 'processia-test' }, callbacks);
+  t.throws(() => new BotConnection({ host: '', port: 26001, username: 'CodexBot' }, callbacks), { message: /explicit-minecraft-target-required/ });
+  t.throws(() => new BotConnection({ host: '127.0.0.1', port: 25565, username: 'CodexBot', profile: 'processia-test' }, callbacks), { message: /processia-test-target-refused: personal-server-port-forbidden/ });
+  t.throws(() => new BotConnection({ host: '127.0.0.1', port: 25665, username: 'CodexBot', profile: 'processia-test' }, callbacks), { message: /processia-test-target-refused: historical-test-server-port-forbidden/ });
+  t.throws(() => new BotConnection({ host: 'localhost', port: 26001, username: 'CodexBot', profile: 'processia-test' }, callbacks), { message: /processia-test-target-refused: loopback-host-required/ });
+  const connection = new BotConnection({ host: '127.0.0.1', port: 26001, username: 'CodexBot', profile: 'processia-test' }, callbacks);
   const returned = connection.getConfig();
   returned.port = 25565;
-  t.is(connection.getConfig().port, 25665);
+  t.is(connection.getConfig().port, 26001);
   t.is(connection.getConfig().host, '127.0.0.1');
   t.is(connection.getConfig().username, 'CodexBot');
 });
@@ -64,14 +66,14 @@ test('every bot creation, including reconnect creation, uses the validated expli
   const bot = Object.assign(new EventEmitter(), { _client: client });
   const createBot = sinon.stub(mineflayer, 'createBot').returns(bot as unknown as mineflayer.Bot);
   try {
-    const connection = new BotConnection({ host: '127.0.0.1', port: 25665, username: 'CodexBot', profile: 'processia-test' },
+    const connection = new BotConnection({ host: '127.0.0.1', port: 26001, username: 'CodexBot', profile: 'processia-test' },
       { onLog: sinon.stub(), onChatMessage: sinon.stub() });
     connection.connect();
     connection.connect();
     t.is(createBot.callCount, 2);
     for (const call of createBot.getCalls()) {
       t.is(call.args[0].host, '127.0.0.1');
-      t.is(call.args[0].port, 25665);
+      t.is(call.args[0].port, 26001);
       t.is(call.args[0].username, 'CodexBot');
       t.true(call.args[0].hideErrors);
       t.truthy(call.args[0].plugins?.pathfinder);

@@ -40,17 +40,25 @@ export interface RuntimeTarget {
 
 export interface TargetValidation { valid: boolean; errors: string[] }
 
+/** 25565 is the personal-server default; 25665 belongs to the retired historical test server. */
+const FORBIDDEN_PORTS: ReadonlyMap<number, string> = new Map([
+  [25565, 'personal-server-port-forbidden'],
+  [25665, 'historical-test-server-port-forbidden'],
+]);
+
 /** Pure policy shared by the offline tests and the future launcher review. It never performs I/O. */
 export function validateRuntimeTarget(input: RuntimeTarget): TargetValidation {
   const errors: string[] = [];
   if (!input.authorized) errors.push('explicit-start-authorization-required');
   if (input.host !== '127.0.0.1') errors.push('loopback-host-required');
   if (!validPort(input.minecraftPort)) errors.push('explicit-minecraft-port-required');
-  if (input.minecraftPort === 25565) errors.push('personal-server-port-forbidden');
+  const forbiddenMinecraftPort = FORBIDDEN_PORTS.get(input.minecraftPort);
+  if (forbiddenMinecraftPort) errors.push(forbiddenMinecraftPort);
   for (const [name, port] of [['bridge', input.bridgePort], ['gui', input.guiPort]] as const) {
     if (port === undefined) continue;
     if (!validPort(port)) errors.push(`explicit-${name}-port-invalid`);
-    if (port === 25565) errors.push('personal-server-port-forbidden');
+    const forbiddenPort = FORBIDDEN_PORTS.get(port);
+    if (forbiddenPort) errors.push(forbiddenPort);
     if (port === input.minecraftPort) errors.push(`${name}-port-collides-with-minecraft`);
   }
   if (input.bridgePort !== undefined && input.guiPort !== undefined && input.bridgePort === input.guiPort) errors.push('gui-port-collides-with-bridge');
