@@ -105,7 +105,9 @@ export class RuntimeRegistryService {
     }
 
     const { host, port } = this.connection.getConfig();
-    const endpoint = `${host}:${port}`;
+    // Loopback aliases are canonicalized like the bridge's endpoint, so authenticated
+    // provenance (always 127.0.0.1) can be compared strictly with this context.
+    const endpoint = `${isLoopbackAlias(host) ? '127.0.0.1' : host}:${port}`;
     const version = bot.version;
     if (bot !== this.bot || endpoint !== this.endpoint || version !== this.minecraftVersion || !this.service || !this.epoch || !this.runtimeEpoch || !this.mineflayerSessionId) {
       this.invalidate();
@@ -268,6 +270,10 @@ export class RuntimeRegistryService {
     this.bridgeSession = null;
     this.bridgeOnlySession = null;
   }
+}
+
+function isLoopbackAlias(host: string): boolean {
+  return /^(localhost|::1|\[::1\])$/i.test(host.trim());
 }
 
 function isLoopbackEndpoint(value: string): boolean {

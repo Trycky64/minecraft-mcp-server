@@ -484,3 +484,25 @@ test('click-window-slot rejects an out-of-range slot and close-open-window close
   t.falsy(closed.isError);
   t.true((bot.closeWindow as unknown as sinon.SinonStub).calledOnceWith(window));
 });
+
+test('interact-block re-checks the target and session after the hand-switch tick and sends nothing if they changed', async (t) => {
+  for (const change of ['state', 'epoch'] as const) {
+    const bot = mockBot();
+    const held = { name: 'stick', type: 1, count: 1 };
+    (bot.inventory as Bot['inventory']).slots[36] = held as never;
+    bot.heldItem = held as never;
+    bot.quickBarSlot = 0;
+    const context: Partial<RuntimeRegistryContext> = { connected: true, registryEpoch: 'test-epoch' };
+    (bot.setQuickBarSlot as unknown as sinon.SinonStub).callsFake((slot: number) => { bot.quickBarSlot = slot; bot.heldItem = slot === 1 ? null : held as never; });
+    (bot.waitForTicks as unknown as sinon.SinonStub).callsFake(async () => {
+      if (change === 'state') bot.blockAt = sinon.stub().returns({ name: 'unknown', stateId: 1701, position: new Vec3(0, 64, 0) }) as unknown as Bot['blockAt'];
+      else context.registryEpoch = 'next-session-epoch';
+    });
+    const { executor } = setup(bot, context);
+    const result = await executor('interact-block')({ x: 0, y: 64, z: 0, expectedStateId: 1700, registryEpoch: 'test-epoch', timeoutMs: 50 });
+    t.true(result.isError, change);
+    t.regex(result.content[0]!.text, /changed-before-action/);
+    t.false((bot.activateBlock as unknown as sinon.SinonStub).called, change);
+    t.is(bot.quickBarSlot, 0, 'the previous hotbar slot is restored');
+  }
+});

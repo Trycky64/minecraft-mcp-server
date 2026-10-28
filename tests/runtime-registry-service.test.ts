@@ -85,11 +85,21 @@ test('does not reuse session data when the server endpoint changes', (t) => {
   const { access, state } = createConnection();
   const runtime = new RuntimeRegistryService(access);
   const before = runtime.getContext();
-  state.host = 'localhost';
+  state.host = 'mc.example.net';
   const after = runtime.getContext();
   t.not(after.registryEpoch, before.registryEpoch);
-  t.is(after.minecraftEndpoint, 'localhost:25565');
+  t.is(after.minecraftEndpoint, 'mc.example.net:25565');
   t.is(after.serverIdentity, null, 'endpoint alone must not be presented as server identity');
+});
+
+test('loopback aliases are one canonical endpoint and do not split the session', (t) => {
+  const { access, state } = createConnection();
+  const runtime = new RuntimeRegistryService(access);
+  const before = runtime.getContext();
+  state.host = 'localhost';
+  const after = runtime.getContext();
+  t.is(after.minecraftEndpoint, '127.0.0.1:25565');
+  t.is(after.registryEpoch, before.registryEpoch);
 });
 
 test('a Mineflayer version change creates new registry and runtime epochs and revokes the old resolver', (t) => {

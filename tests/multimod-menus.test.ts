@@ -280,3 +280,15 @@ test('a Mineflayer-built vanilla window names slot items from the authenticated 
   t.regex(click.content[0]!.text, /stale-window-runtime-context/);
   t.false(clickWindow.called);
 });
+
+test('a bot configured with the localhost alias still uses the authenticated mappings of its loopback bridge', async (t) => {
+  const bot = createFakeBot();
+  const session = createModdedSession(bot, { configHost: 'localhost' });
+  session.attachBridge(SERVER_A);
+  t.is(session.context().minecraftEndpoint, '127.0.0.1:26001');
+  const { inspect } = tools(bot, session.context);
+  openExampleMachine(bot, 25);
+  const raw = (await inspect()).rawWindow!;
+  t.is(raw.menuIdentity.namespacedId, 'examplemod:machine_menu');
+  t.is(raw.slots![0]!.namespacedId, 'examplemod:copper_gear');
+});

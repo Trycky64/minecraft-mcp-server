@@ -377,7 +377,14 @@ export function registerWindowTools(
 
     const waiter = waitForWindowOpen(bot, timeoutMs);
     try {
-      await withEmptyHand(bot, () => bot.activateBlock(block));
+      await withEmptyHand(bot, () => {
+        // The hand switch waits a tick: re-validate the target and session immediately before sending.
+        const current = bot.blockAt(position);
+        if (getBot() !== bot || getRegistryContext()?.registryEpoch !== registryEpoch || !current || current.stateId !== expectedStateId) {
+          throw new Error('interact-block-target-or-session-changed-before-action: no interaction was sent; re-observe the block');
+        }
+        return bot.activateBlock(block);
+      });
       const opened = await waiter.promise;
       const current = bot.blockAt(position);
       const rawObservation = getInventoryActionConfirmationTracker(bot).getRawMenuObservation();

@@ -80,12 +80,13 @@ const uuid = () => `00000000-0000-4000-8000-${String(++sequence).padStart(12, '0
  * A real RuntimeRegistryService for one Mineflayer session, with an authenticated
  * bridge snapshot passed through the same validation as production snapshots.
  */
-export function createModdedSession(bot: FakeBot) {
+export function createModdedSession(bot: FakeBot, options: { configHost?: string } = {}) {
   const state = { bot: bot as FakeBot | null, connected: true };
   const runtime = new RuntimeRegistryService({
     getBot: () => state.bot as unknown as mineflayer.Bot | null,
     isConnected: () => state.connected,
-    getConfig: () => TEST_ENDPOINT,
+    // The bot may be configured with a loopback alias; the bridge always reports 127.0.0.1.
+    getConfig: () => ({ host: options.configHost ?? TEST_ENDPOINT.host, port: TEST_ENDPOINT.port }),
     getConnectionMode: () => 'bot',
   });
   const endpoint = `${TEST_ENDPOINT.host}:${TEST_ENDPOINT.port}`;
