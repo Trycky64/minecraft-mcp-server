@@ -1,10 +1,13 @@
 import { z } from "zod";
 import type { Bot } from 'mineflayer';
 import { ToolFactory } from '../tool-factory.js';
+import type { RuntimeRegistryContext } from '../services/runtime-registry-service.js';
+import { isUnsafeItemNameStatus, mineflayerRegistryNameStatus, resolveRuntimeNumericId } from '../services/registry-reporting.js';
 
 type Entity = ReturnType<Bot['nearestEntity']>;
 
-export function registerEntityTools(factory: ToolFactory, getBot: () => Bot): void {
+export function registerEntityTools(factory: ToolFactory, getBot: () => Bot,
+  getRegistryContext: () => RuntimeRegistryContext | null = () => null): void {
   factory.registerTool(
     "find-entity",
     "Find the nearest entity of a specific type",
@@ -14,11 +17,28 @@ export function registerEntityTools(factory: ToolFactory, getBot: () => Bot): vo
     },
     async ({ type = '', maxDistance = 16 }) => {
       const bot = getBot();
+      const context = getRegistryContext();
+      // Mineflayer names entities from its static table via the raw entity type ID;
+      // only the runtime registry of this session can confirm or contradict that name.
+      const identityOf = (entity: NonNullable<Entity>) => {
+        const rawEntityTypeId = Number.isSafeInteger(entity.entityType) ? entity.entityType : null;
+        const resolution = rawEntityTypeId === null ? null : resolveRuntimeNumericId('entity', rawEntityTypeId, context);
+        return {
+          rawEntityTypeId,
+          namespacedId: resolution?.status === 'resolved' && resolution.provenance.source !== 'minecraft-data' ? resolution.entry.namespacedId : null,
+          mineflayerNameStatus: mineflayerRegistryNameStatus({ name: entity.name ?? 'unknown' }, resolution),
+        };
+      };
       const entityFilter = (entity: NonNullable<Entity>) => {
         if (!type) return true;
         if (type === 'player') return entity.type === 'player';
         if (type === 'mob') return entity.type === 'mob';
-        return Boolean(entity.name && entity.name.includes(type.toLowerCase()));
+        const identity = identityOf(entity);
+        if (type.includes(':')) {
+          if (identity.namespacedId === type) return true;
+          return !isUnsafeItemNameStatus(identity.mineflayerNameStatus) && type.startsWith('minecraft:') && entity.name !== 'unknown' && `minecraft:${entity.name}` === type;
+        }
+        return !isUnsafeItemNameStatus(identity.mineflayerNameStatus) && Boolean(entity.name && entity.name !== 'unknown' && entity.name.includes(type.toLowerCase()));
       };
 
       const entity = bot.nearestEntity(entityFilter);
@@ -33,6 +53,8 @@ export function registerEntityTools(factory: ToolFactory, getBot: () => Bot): vo
         entityId: entity.id,
         name: entityName,
         type: entity.type,
+        mineflayerName: entity.name ?? null,
+        ...identityOf(entity),
         position: { x: entity.position.x, y: entity.position.y, z: entity.position.z },
         droppedItem: droppedItem ? {
           rawNumericId: droppedItem.type,

@@ -39,6 +39,7 @@ test('fly-to successfully flies to destination', async (t) => {
   const flyToStub = sinon.stub().resolves();
   const stopFlyingStub = sinon.stub();
   const mockBot = {
+    game: { gameMode: 'creative' },
     creative: {
       flyTo: flyToStub,
       stopFlying: stopFlyingStub
@@ -100,6 +101,7 @@ test('fly-to handles flight errors', async (t) => {
   const flyToStub = sinon.stub().rejects(new Error('Cannot reach destination'));
   const stopFlyingStub = sinon.stub();
   const mockBot = {
+    game: { gameMode: 'creative' },
     creative: {
       flyTo: flyToStub,
       stopFlying: stopFlyingStub

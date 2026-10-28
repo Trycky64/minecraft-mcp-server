@@ -100,12 +100,12 @@ async function main() {
     }
   }
 
-  registerPositionTools(factory, getBot);
+  registerPositionTools(factory, getBot, getRegistryContext);
   registerInventoryTools(factory, getBot, getRegistryContext);
   registerBlockTools(factory, getBot, getRegistryContext);
-  registerEntityTools(factory, getBot);
+  registerEntityTools(factory, getBot, getRegistryContext);
   registerChatTools(factory, getBot, messageStore, { profile: config.profile });
-  registerFlightTools(factory, getBot);
+  registerFlightTools(factory, getBot, getRegistryContext);
   registerGameStateTools(factory, getBot);
   registerCraftingTools(factory, getBot, getRegistryContext);
   registerFurnaceTools(factory, getBot, getRegistryContext);

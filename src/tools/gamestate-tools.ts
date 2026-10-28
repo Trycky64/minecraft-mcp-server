@@ -8,7 +8,11 @@ export function registerGameStateTools(factory: ToolFactory, getBot: () => minef
     {},
     async () => {
       const bot = getBot();
-      return factory.createResponse(`Bot gamemode: "${bot.game.gameMode}"`);
+      const gameMode = (bot.game as { gameMode?: unknown } | undefined)?.gameMode;
+      if (typeof gameMode !== 'string' || gameMode.length === 0) {
+        return factory.createResponse('Bot gamemode: unknown (no game mode has been reported to this session)');
+      }
+      return factory.createResponse(`Bot gamemode: "${gameMode}"`);
     }
   );
 }

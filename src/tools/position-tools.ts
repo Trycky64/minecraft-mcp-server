@@ -5,6 +5,8 @@ const { goals } = pathfinderPkg;
 import { Vec3 } from 'vec3';
 import { ToolFactory } from '../tool-factory.js';
 import { coerceCoordinates } from './coordinate-utils.js';
+import type { RuntimeRegistryContext } from '../services/runtime-registry-service.js';
+import { minecraftSessionKey } from '../services/registry-reporting.js';
 
 type Direction = 'forward' | 'back' | 'left' | 'right';
 const MAX_MOVE_DISTANCE = 64;
@@ -12,7 +14,8 @@ const DEFAULT_MOVE_TIMEOUT_MS = 15_000;
 const MAX_MOVE_TIMEOUT_MS = 30_000;
 const MAX_DIRECTION_MOVE_MS = 5_000;
 
-export function registerPositionTools(factory: ToolFactory, getBot: () => mineflayer.Bot): void {
+export function registerPositionTools(factory: ToolFactory, getBot: () => mineflayer.Bot,
+  getRegistryContext: () => RuntimeRegistryContext | null = () => null): void {
   factory.registerTool(
     "get-position",
     "Get the current position of the bot",
@@ -37,12 +40,18 @@ export function registerPositionTools(factory: ToolFactory, getBot: () => minefl
       y: z.coerce.number().finite().min(-2048).max(2048).describe("Y coordinate"),
       z: z.coerce.number().finite().min(-30_000_000).max(30_000_000).describe("Z coordinate"),
       range: z.coerce.number().finite().min(0).max(8).optional().describe("How close to get to the target (default: 1, max: 8)"),
-      timeoutMs: z.number().int().min(50).max(MAX_MOVE_TIMEOUT_MS).optional().describe("Timeout in milliseconds (default: 15000, max: 30000)")
+      timeoutMs: z.number().int().min(50).max(MAX_MOVE_TIMEOUT_MS).optional().describe("Timeout in milliseconds (default: 15000, max: 30000)"),
+      registryEpoch: z.string().min(1).max(200).optional().describe('Optional registry epoch from the observation this move relies on; a different current epoch is refused'),
     },
-    async ({ x, y, z, range = 1, timeoutMs = DEFAULT_MOVE_TIMEOUT_MS }: { x: number; y: number; z: number; range?: number; timeoutMs?: number }) => {
+    async ({ x, y, z, range = 1, timeoutMs = DEFAULT_MOVE_TIMEOUT_MS, registryEpoch }: { x: number; y: number; z: number; range?: number; timeoutMs?: number; registryEpoch?: string }) => {
       ({ x, y, z } = coerceCoordinates(x, y, z));
 
       const bot = getBot();
+      const context = getRegistryContext();
+      if (registryEpoch !== undefined && context?.registryEpoch !== registryEpoch) {
+        return factory.createErrorResponse('stale-registry-epoch: re-observe the target in the current session before moving');
+      }
+      const sessionKey = minecraftSessionKey(context);
       if (bot.entity?.position && bot.entity.position.distanceTo(new Vec3(x, y, z)) > MAX_MOVE_DISTANCE) {
         return factory.createErrorResponse(`Move target is too far; maximum path distance is ${MAX_MOVE_DISTANCE} blocks`);
       }
@@ -62,6 +71,10 @@ export function registerPositionTools(factory: ToolFactory, getBot: () => minefl
 
       try {
         await Promise.race([gotoPromise, timeoutPromise]);
+        // Movement does not depend on modded registries, but a new player session makes the old bot's position meaningless.
+        if (getBot() !== bot || minecraftSessionKey(getRegistryContext()) !== sessionKey) {
+          return factory.createErrorResponse('minecraft-session-changed-during-action: the movement outcome on the previous session is uncertain and was not retried');
+        }
         const position = bot.entity?.position;
         return factory.createResponse(JSON.stringify({ status: 'movement-observed-client-side', actionRequested: true, actionSent: true,
           target: { x, y, z }, currentPosition: position ? { x: position.x, y: position.y, z: position.z } : null,

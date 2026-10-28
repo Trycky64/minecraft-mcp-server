@@ -58,10 +58,20 @@ export function runtimeBlockStateConflict(block: { name: string; stateId: number
   return null;
 }
 
+/** Identifies the Minecraft player session only; registry-independent actions ignore bridge changes. */
+export function minecraftSessionKey(context: RuntimeRegistryContext | null): string {
+  return JSON.stringify(context ? [context.mineflayerSessionId, context.minecraftEndpoint] : null);
+}
+
 export function resolveItemType(type: unknown, context: RuntimeRegistryContext | null): RegistryResolution | null {
+  return resolveRuntimeNumericId('item', type, context);
+}
+
+/** Resolves a raw protocol numeric ID (item, entity type...) in the current registry context. */
+export function resolveRuntimeNumericId(kind: 'item' | 'entity', type: unknown, context: RuntimeRegistryContext | null): RegistryResolution | null {
   if (typeof type !== 'number' || !Number.isSafeInteger(type) || !context?.registryService || !context.minecraftVersion) return null;
   return context.registryService.resolve({
-    kind: 'item',
+    kind,
     minecraftVersion: context.minecraftVersion,
     registryEpoch: context.registryEpoch ?? undefined,
     numericId: type,
@@ -78,6 +88,11 @@ export type MineflayerItemNameStatus = 'matches-runtime-registry' | 'contradicts
  */
 export function mineflayerItemNameStatus(item: { type: unknown; name: string }, context: RuntimeRegistryContext | null,
   resolution: RegistryResolution | null = resolveItemType(item.type, context)): MineflayerItemNameStatus {
+  return mineflayerRegistryNameStatus(item, resolution);
+}
+
+/** Same comparison for any registry kind, given the runtime resolution of the raw numeric ID. */
+export function mineflayerRegistryNameStatus(item: { name: string }, resolution: RegistryResolution | null): MineflayerItemNameStatus {
   if (resolution?.status === 'ambiguous') return 'ambiguous-runtime-mapping';
   if (resolution?.status === 'unavailable' && resolution.reason === 'stale-context') return 'stale-runtime-context';
   if (resolution?.status === 'unresolved' && resolution.reason === 'identifier-not-found') return 'absent-from-complete-runtime-registry';

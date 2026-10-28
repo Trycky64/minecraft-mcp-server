@@ -3,6 +3,8 @@ import mineflayer from 'mineflayer';
 import { Vec3 } from 'vec3';
 import { ToolFactory } from '../tool-factory.js';
 import { coerceCoordinates } from './coordinate-utils.js';
+import type { RuntimeRegistryContext } from '../services/runtime-registry-service.js';
+import { minecraftSessionKey } from '../services/registry-reporting.js';
 
 function createCancellableFlightOperation(
   bot: mineflayer.Bot,
@@ -32,7 +34,8 @@ function createCancellableFlightOperation(
   });
 }
 
-export function registerFlightTools(factory: ToolFactory, getBot: () => mineflayer.Bot): void {
+export function registerFlightTools(factory: ToolFactory, getBot: () => mineflayer.Bot,
+  getRegistryContext: () => RuntimeRegistryContext | null = () => null): void {
   factory.registerTool(
     "fly-to",
     "Make the bot fly to a specific position",
@@ -45,9 +48,12 @@ export function registerFlightTools(factory: ToolFactory, getBot: () => mineflay
       ({ x, y, z } = coerceCoordinates(x, y, z));
 
       const bot = getBot();
+      const sessionKey = minecraftSessionKey(getRegistryContext());
 
-      if (!bot.creative) {
-        return factory.createResponse("Creative mode is not available. Cannot fly.");
+      // The creative plugin is always loaded; flight movement outside creative mode is illegal movement for the server.
+      const gameMode = (bot.game as { gameMode?: unknown } | undefined)?.gameMode;
+      if (!bot.creative || gameMode !== 'creative') {
+        return factory.createErrorResponse(`Creative mode is not available (game mode: ${typeof gameMode === 'string' && gameMode ? gameMode : 'unknown'}). Cannot fly; no flight movement was sent.`);
       }
 
       const controller = new AbortController();
@@ -62,6 +68,9 @@ export function registerFlightTools(factory: ToolFactory, getBot: () => mineflay
       try {
         const destination = new Vec3(x, y, z);
         await createCancellableFlightOperation(bot, destination, controller);
+        if (getBot() !== bot || minecraftSessionKey(getRegistryContext()) !== sessionKey) {
+          return factory.createErrorResponse('minecraft-session-changed-during-action: the flight outcome on the previous session is uncertain and was not retried');
+        }
         return factory.createResponse(`Successfully flew to position (${x}, ${y}, ${z}).`);
       } catch (error) {
         if (controller.signal.aborted) {

@@ -68,6 +68,9 @@ export interface ModdedServerRegistry {
   /** Server block state IDs with their authoritative properties, when the bridge reports them. */
   blockStates?: Array<[number, string, Record<string, string>?]>;
   blockStateCoverage?: 'complete' | 'partial';
+  /** Server entity type registry IDs (Mineflayer's entity.entityType). */
+  entities?: Array<[number, string]>;
+  entityCoverage?: 'complete' | 'partial';
 }
 
 let sequence = 0;
@@ -116,14 +119,17 @@ export function createModdedSession(bot: FakeBot) {
       mineflayerSessionId: context.mineflayerSessionId!, mineflayerRegistryEpoch: context.mineflayerRegistryEpoch!,
       bridgeSessionId: session.sessionId, sourceRegistryEpoch: session.sourceRegistryEpoch, serverIdentity: session.serverIdentity,
       neoForgeVersion: session.neoForgeVersion, observedAt: new Date(0).toISOString(),
-      availableRegistries: ['menu', 'item', ...(registry.blocks ? ['block'] : []), ...(registry.blockStates ? ['blockState'] : [])],
+      availableRegistries: ['menu', 'item', ...(registry.blocks ? ['block'] : []), ...(registry.blockStates ? ['blockState'] : []),
+        ...(registry.entities ? ['entity'] : [])],
       registryCoverage: { menu: menuCoverage, item: itemCoverage, ...(registry.blocks ? { block: 'partial' as const } : {}),
-        ...(registry.blockStates ? { blockState: blockStateCoverage } : {}) },
+        ...(registry.blockStates ? { blockState: blockStateCoverage } : {}),
+        ...(registry.entities ? { entity: registry.entityCoverage ?? 'partial' } : {}) },
       entries: [
         ...registry.menus.map(([id, name]) => entry('menu', id, name, menuCoverage)),
         ...registry.items.map(([id, name]) => entry('item', id, name, itemCoverage)),
         ...(registry.blocks ?? []).map(([id, name]) => entry('block', id, name, 'partial')),
         ...(registry.blockStates ?? []).map(([id, name, properties]) => entry('blockState', id, name, blockStateCoverage, properties)),
+        ...(registry.entities ?? []).map(([id, name]) => entry('entity', id, name, registry.entityCoverage ?? 'partial')),
       ],
     }, session.sessionId);
     return session;
