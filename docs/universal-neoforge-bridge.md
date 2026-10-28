@@ -90,3 +90,9 @@ Current limits:
 - The legacy Processia adapter still uses its own protocol headers and configured shared secret; the generated credential flow belongs to the standalone generic bridge.
 - Complete refresh is capped at 100,000 entries in TypeScript to bound memory on ARM64. Oversized refreshes fail closed; they do not publish partial snapshots as complete.
 - Historical Mission 2 coverage was generic NeoForge without Processia. Mission 6 subsequently exercised bridge-only MCP against vanilla, generic NeoForge, Processia and Mekanism isolated profiles, including a non-empty Mekanism fluid capability via a test-only fixture. See [`MISSION6_FINAL_REPORT.md`](MISSION6_FINAL_REPORT.md) for the current evidence and limitations.
+
+## Runtime identity notes (2026-10-28)
+
+- The MCP canonicalizes loopback aliases (`localhost`, `::1`) to `127.0.0.1` in its runtime context, matching the endpoint the bridge reports; authenticated provenance is compared strictly against it.
+- `minecraft-inspect-capabilities` adds `capabilityReports` (`not-supported-by-adapter`, `not-present-in-bridge-response`, `empty-list-in-bridge-response`, `entries-reported`) per item/energy/fluid system. A missing list means unknown, never zero.
+- Registry coverage matters: only a `complete` runtime registry can prove that an ID does not exist; the MCP then refuses static fallbacks for that kind.

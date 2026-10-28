@@ -1,5 +1,7 @@
 # Minecraft MCP Server
 
+> **Cloud development status (2026-10-28):** offline development through the Claude Cloud missions 29–35 and the final consolidation is complete on branch `cloud/final-development`: build, lint and 460 offline AVA tests pass, 60 MCP tools are registered. Synthetic tests are **not** runtime validation; real-server checks are listed as `NOT_RUN` in [the final cloud report](docs/FINAL_CLOUD_DEVELOPMENT_REPORT.md) and their procedures are in [the Codex runtime validation guide](docs/CODEX_RUNTIME_VALIDATION.md). Mission banners below are historical snapshots.
+
 > **Mission 12 candidate (2026-10-16):** The local, unpublished MCP package is now `2.1.0-beta.1`; the standalone bridge remains `0.1.0`. Windows and Linux x64 builds, lint and 231 tests pass. The GUI remains experimental and the six moderate production npm audit findings await an explicit risk decision. See [Mission 12 release report](docs/MISSION12_MCP_RELEASE_REPORT.md). Earlier mission summaries below are historical snapshots.
 
 > **Mission 11 (2026-10-16):** The isolated Windows rerun validated the corrected Crusher GUI E2E path, a real Raw Iron → Iron Dust recipe (output increased from 2 to 3), vanilla adjacent and two distant placements, and timeout without late placement. Windows and Linux x64 each pass 231 MCP tests. The source version is still **2.0.4**; the GUI remains experimental, six moderate production advisories remain, and native ARM64 is untested. See [Mission 11 report](docs/MISSION11_FINAL_REPORT.md) for evidence and the beta decision.
@@ -51,6 +53,16 @@ The existing Mineflayer tools work without NeoForge or Processia. An optional co
 The generic bridge is disabled by default. Enabling it requires `MINECRAFT_MCP_BRIDGE_ENABLED=true` and `MINECRAFT_MCP_ENVIRONMENT=development` in the game server environment. It writes an ephemeral owner-only credential file in the server `config` directory. Configure the MCP process with `MINECRAFT_MCP_BRIDGE_ENABLED=true` and `MINECRAFT_MCP_BRIDGE_CREDENTIAL_FILE` pointing to that file. The default bridge listener is `127.0.0.1:25577`; it must differ from the Minecraft port. Never copy the credential into logs or source control.
 
 The bridge reports registry-local numeric IDs scoped to a server registry generation. They are not stable between server restarts or registry reloads. Arbitrary mod-private BlockEntity fields and custom capability APIs are not reflected. Capability inspection only reads standard NeoForge ItemHandler, EnergyStorage and FluidHandler interfaces and refuses unloaded chunks. See the [security and endpoint contract](docs/universal-neoforge-bridge.md).
+
+## Runtime identities and safety guards
+
+Mineflayer names blocks, items, entities and menus from static `minecraft-data` tables. On modded or reordered servers those names can be wrong, so the MCP compares them with the authenticated runtime registry of the current session whenever one exists:
+
+- Responses report `rawStateId`/`rawNumericId`/`rawEntityTypeId`, the runtime `namespacedId` when authenticated, and `mineflayerNameStatus` (`matches-runtime-registry`, `contradicts-runtime-registry`, `ambiguous-runtime-mapping`, `absent-from-complete-runtime-registry`, `not-checked-against-runtime-registry`, `mineflayer-name-unavailable`). Unknown numeric IDs stay raw; nothing is inferred.
+- Actions refuse a contradicted, ambiguous or complete-registry-absent identity: `dig-block`, `place-block`, `equip-item`, `craft-item`, `smelt-item` and name-based searches never act through such a static name. Without a bridge, or when the runtime registry does not mention an ID, vanilla behavior is unchanged.
+- Context (Minecraft session, registry epochs, bridge session, server identity) is re-checked immediately before each network action; a change stops the action without retry and reports any partial progress. `dig-block`, `place-block`, `equip-item`, `craft-item`, `smelt-item` and `move-to-position` accept an optional `registryEpoch` to refuse a stale observation; `interact-block`, `click-window-slot` and `close-open-window` require it.
+- The pathfinder only moves: it never digs or places scaffolding. `fly-to` requires a reported creative game mode. Raw-only (modded/unknown) menus are read-only.
+- Recipes come from static `minecraft-data`; recipe tools label them as such and never present a recipe whose output the server contradicts as craftable.
 
 ## Getting started
 
@@ -138,7 +150,21 @@ Once connected to a Minecraft server, Claude can use these commands:
 - `read-chat` - Get recent chat messages from players
 
 ### Game State
-- `detect-gamemode` - Detect the gamemode on game
+- `detect-gamemode` - Detect the gamemode on game (reports `unknown` when no game mode was received)
+
+### Crafting
+- `list-recipes`, `get-recipe`, `can-craft`, `craft-item` - static `minecraft-data` recipes, checked against the runtime registry when available
+
+### Menus and containers
+- `interact-block`, `inspect-open-window`, `click-window-slot`, `close-open-window` - protocol-level menus; unknown modded menus are inspectable raw-only and never clickable
+
+### Registries and bridge
+- `minecraft-get-server-info`, `minecraft-get-capabilities`, `minecraft-list-namespaces`, `minecraft-search-registry`, `registry-status`, `registry-resolve`, `registry-inspect`
+- `bridge-status`, `bridge-refresh-registries`, `minecraft-inspect-block-entity`, `minecraft-inspect-capabilities` (item/FE/fluid; `capabilityReports` distinguishes unsupported, absent, empty and reported)
+- Optional Processia adapter: `inspect-processia-machine`, `inspect-processia-capabilities`, `list-processia-machines`, `inspect-processia-recipes`
+
+### Experimental GUI harness (Processia client, disabled by default)
+- `gui-*` tools (19); require `PROCESSIA_GUI_ENABLED=true` and an instrumented test client
 
 ## Contributing
 

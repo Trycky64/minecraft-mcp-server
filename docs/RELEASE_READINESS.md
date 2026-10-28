@@ -1,5 +1,7 @@
 # Mission 13 current status (2026-10-16)
 
+> **Current state (2026-10-28):** see [the final cloud development report](FINAL_CLOUD_DEVELOPMENT_REPORT.md) for offline validation and remaining risks, and [the Codex runtime validation guide](CODEX_RUNTIME_VALIDATION.md) for the runtime checks still `NOT_RUN`. The sections below are historical.
+
 **PARTIAL — private beta candidate prepared locally, pending owner decisions.** Candidate `2.1.0-beta.1` and bridge `0.1.0` are under `C:/Users/qperr/minecraft-mcp-test/release-candidate/mission13/`. Windows x64 and Linux x64 each passed `npm ci`, build, 232 tests and lint; MCP stdio listed 56 tools on both. Current audit: 15 advisories overall, 6 moderate in production; uuid risk remains pending explicit owner approval. A real Processia Crusher screen and energy synchronization were captured at 1600×900, but M2-V01 across every machine/face and human visual approval remain open. Processia V0.2 nickel slice is implemented; 49/49 required GameTests passed. Nothing was committed, tagged, pushed, published or transmitted. See [Mission 13 MCP report](MISSION13_MCP_FINAL_REPORT.md) and Processia report in the sibling project.
 
 The Mission 12 and earlier sections below are historical snapshots unless specifically updated.
