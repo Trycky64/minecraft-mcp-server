@@ -20,6 +20,17 @@ interface ConnectionCallbacks {
   onChatMessage: (username: string, message: string) => void;
 }
 
+/**
+ * mineflayer-pathfinder digs and places scaffolding by default. Those are
+ * unrequested world changes, decided from static block data that may not
+ * describe a modded server, and they bypass the dig/place identity guards.
+ * Paths are therefore restricted to movement.
+ */
+export function movementOnly<T extends object>(movements: T): T {
+  // These settings exist at runtime but are not declared in the bundled typings.
+  return Object.assign(movements, { canDig: false, allow1by1towers: false, scafoldingBlocks: [] });
+}
+
 export class BotConnection {
   private bot: mineflayer.Bot | null = null;
   private state: ConnectionState = 'disconnected';
@@ -115,8 +126,7 @@ export class BotConnection {
       this.callbacks.onLog('info', 'Bot spawned in world');
 
       const mcData = minecraftData(bot.version);
-      const defaultMove = new Movements(bot, mcData);
-      bot.pathfinder.setMovements(defaultMove);
+      bot.pathfinder.setMovements(movementOnly(new Movements(bot, mcData)));
 
       this.callbacks.onLog('info', `Bot connected successfully. Username: ${this.config.username}, Server: ${this.config.host}:${this.config.port}`);
     });

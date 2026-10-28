@@ -4,6 +4,8 @@ import { BotConnection } from '../src/bot-connection.js';
 import mineflayer from 'mineflayer';
 import { EventEmitter } from 'node:events';
 import { getProtocolDecodeStatus } from '../src/services/protocol-decode-monitor.js';
+import { createRequire } from 'node:module';
+const prismarineRegistry = createRequire(createRequire(import.meta.url).resolve('mineflayer'))('prismarine-registry') as (version: string) => unknown;
 
 test('constructor initializes with correct state', (t) => {
   const config = { host: 'localhost', port: 25565, username: 'TestBot' };
@@ -269,4 +271,23 @@ test('cleanup does not throw when no bot exists', async (t) => {
   const connection = new BotConnection(config, callbacks);
 
   await t.notThrowsAsync(() => connection.cleanup());
+});
+
+test.serial('pathfinding is configured for movement only: no digging and no scaffolding placement', (t) => {
+  const client = Object.assign(new EventEmitter(), { state: 'play', version: '1.21.1', deserializer: { parsePacketBuffer() { return {}; } }, setSerializer() {} });
+  const setMovements = sinon.stub();
+  const bot = Object.assign(new EventEmitter(), { _client: client, version: '1.21.1', registry: prismarineRegistry('1.21.1'), pathfinder: { setMovements } });
+  const createBot = sinon.stub(mineflayer, 'createBot').returns(bot as unknown as mineflayer.Bot);
+  try {
+    const connection = new BotConnection({ host: '127.0.0.1', port: 26001, username: 'CodexBot' }, { onLog: sinon.stub(), onChatMessage: sinon.stub() });
+    connection.connect();
+    bot.emit('spawn');
+    t.true(setMovements.calledOnce);
+    const movements = setMovements.firstCall.args[0] as { canDig: boolean; allow1by1towers: boolean; scafoldingBlocks: number[] };
+    t.false(movements.canDig);
+    t.false(movements.allow1by1towers);
+    t.deepEqual(movements.scafoldingBlocks, []);
+  } finally {
+    createBot.restore();
+  }
 });

@@ -181,3 +181,11 @@ test('send-chat keeps its single send without retry', async (t) => {
   t.regex(result.content[0]!.text, /chat-send-requested/);
   t.is(ctx.extended.chat.callCount, 1);
 });
+
+test('the mob filter covers Mineflayer 1.21 living mob categories but not objects or contradicted entities', async (t) => {
+  const marker: MockEntity = { id: 504, entityType: 3, name: 'arrow', type: 'projectile', position: new Vec3(1, 64, 0) };
+  t.like((await setup(null, [marker, ZOMBIE, COW]).findEntity('mob')).details, { entityId: 501, type: 'hostile' });
+  t.like((await setup(null, [marker, COW]).findEntity('mob')).details, { entityId: 502, type: 'animal' });
+  t.regex((await setup(null, [marker]).findEntity('mob')).text, /^No mob found/);
+  t.like((await setup(REORDERED, [marker, ZOMBIE, COW]).findEntity('mob')).details, { entityId: 502 });
+});

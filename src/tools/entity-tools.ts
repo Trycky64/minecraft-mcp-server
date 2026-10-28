@@ -6,6 +6,9 @@ import { isUnsafeItemNameStatus, mineflayerRegistryNameStatus, resolveRuntimeNum
 
 type Entity = ReturnType<Bot['nearestEntity']>;
 
+/** Mineflayer 1.21 categories of living mobs; 'mob' alone covers only a few bosses and golems. */
+const MOB_CATEGORIES = new Set(['mob', 'hostile', 'animal', 'passive', 'ambient', 'water_creature']);
+
 export function registerEntityTools(factory: ToolFactory, getBot: () => Bot,
   getRegistryContext: () => RuntimeRegistryContext | null = () => null): void {
   factory.registerTool(
@@ -32,8 +35,9 @@ export function registerEntityTools(factory: ToolFactory, getBot: () => Bot,
       const entityFilter = (entity: NonNullable<Entity>) => {
         if (!type) return true;
         if (type === 'player') return entity.type === 'player';
-        if (type === 'mob') return entity.type === 'mob';
         const identity = identityOf(entity);
+        // The category also comes from Mineflayer's static table, so it is unusable once the name is contradicted.
+        if (type === 'mob') return MOB_CATEGORIES.has(entity.type) && !isUnsafeItemNameStatus(identity.mineflayerNameStatus);
         if (type.includes(':')) {
           if (identity.namespacedId === type) return true;
           return !isUnsafeItemNameStatus(identity.mineflayerNameStatus) && type.startsWith('minecraft:') && entity.name !== 'unknown' && `minecraft:${entity.name}` === type;
