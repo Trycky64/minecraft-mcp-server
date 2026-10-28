@@ -3,6 +3,8 @@ import mineflayer from 'mineflayer';
 import minecraftData from 'minecraft-data';
 import { ToolFactory } from '../tool-factory.js';
 import { log } from '../logger.js';
+import type { RuntimeRegistryContext } from '../services/runtime-registry-service.js';
+import { isUnsafeItemNameStatus, mineflayerItemNameStatus, resolveItemType, runtimeContextKey } from '../services/registry-reporting.js';
 
 const MAX_CRAFT_OPERATION_MS = 15_000;
 const activeCraftOperations = new WeakMap<object, Promise<void>>();
@@ -361,7 +363,37 @@ function getAllRecipes(mcData: unknown): unknown[] {
   return [];
 }
 
-export function registerCraftingTools(factory: ToolFactory, getBot: () => mineflayer.Bot): void {
+/**
+ * Recipes, ingredient names and output IDs come from static minecraft-data.
+ * Returns a refusal when the current runtime registry shows they do not
+ * describe the server's items: a contradicted output, or an inventory stack
+ * whose static name Mineflayer could use as an ingredient.
+ */
+function runtimeRecipeConflict(bot: mineflayer.Bot, recipe: unknown, mcData: unknown, itemsById: McDataItemsById,
+  context: RuntimeRegistryContext | null): string | null {
+  if (!context?.registryService) return null;
+  const result = getRecipeResult(recipe, itemsById);
+  const outputId = result ? (mcData as { itemsByName?: Record<string, { id?: unknown }> }).itemsByName?.[result.name]?.id : undefined;
+  if (result && typeof outputId === 'number') {
+    const status = mineflayerItemNameStatus({ type: outputId, name: result.name }, context);
+    if (isUnsafeItemNameStatus(status)) {
+      const runtime = resolveItemType(outputId, context);
+      return `recipe-output-contradicted-by-runtime-registry: output ${result.name} (ID ${outputId}) is ${runtime?.status === 'resolved' ? runtime.entry.namespacedId : status} on this server`;
+    }
+  }
+  const ingredientNames = new Set(parseRecipeIngredientOptions(recipe, itemsById).flatMap(({ options }) => options));
+  for (const stack of bot.inventory.items()) {
+    if (!ingredientNames.has(stack.name)) continue;
+    const status = mineflayerItemNameStatus(stack, context);
+    if (!isUnsafeItemNameStatus(status)) continue;
+    const runtime = resolveItemType(stack.type, context);
+    return `recipe-ingredient-contradicted-by-runtime-registry: slot ${stack.slot} Mineflayer '${stack.name}' (ID ${stack.type}) is ${runtime?.status === 'resolved' ? runtime.entry.namespacedId : status} on this server`;
+  }
+  return null;
+}
+
+export function registerCraftingTools(factory: ToolFactory, getBot: () => mineflayer.Bot,
+  getRegistryContext: () => RuntimeRegistryContext | null = () => null): void {
   factory.registerTool(
     "list-recipes",
     "List all available crafting recipes the bot can make with current inventory",
@@ -427,12 +459,18 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
     "Craft an item using a crafting recipe",
     {
       outputItem: z.string().trim().min(1).describe("Name of the item to craft"),
-      amount: z.number().int().min(1).max(16).optional().describe("Number of crafting operations (default: 1, maximum: 16 per request)")
+      amount: z.number().int().min(1).max(16).optional().describe("Number of crafting operations (default: 1, maximum: 16 per request)"),
+      registryEpoch: z.string().min(1).max(200).optional().describe('Optional registry epoch from the inventory observation; a different current epoch is refused'),
     },
-    async ({ outputItem, amount = 1 }) => {
+    async ({ outputItem, amount = 1, registryEpoch }) => {
       const outputQuery = normalizeItemName(outputItem);
 
       const bot = getBot();
+      const startContext = getRegistryContext();
+      const startContextKey = runtimeContextKey(startContext);
+      if (registryEpoch !== undefined && startContext?.registryEpoch !== registryEpoch) {
+        return factory.createErrorResponse('stale-registry-epoch: re-list the inventory in the current session before crafting');
+      }
       const mcData = minecraftData(bot.version);
       const itemsById = (mcData as unknown as { items: McDataItemsById }).items;
       const recipes = getAllRecipes(mcData);
@@ -443,6 +481,7 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
 
       let craftedCount = 0;
       let lastError = "";
+      let runtimeRefusal: string | null = null;
 
       const table = findNearbyCraftingTable(bot, mcData);
       const candidatesFromBotNoTable = collectCandidateRecipesFromBot(bot, mcData, outputQuery, itemsById, null);
@@ -466,6 +505,19 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
             if (!bestCannotCraft || evaluation.missingTotal < bestCannotCraft.missingTotal) {
               bestCannotCraft = { missingTotal: evaluation.missingTotal, message: msg };
             }
+            continue;
+          }
+
+          // Re-validated before every crafting request, including later operations of the same call.
+          if (getBot() !== bot || runtimeContextKey(getRegistryContext()) !== startContextKey) {
+            return factory.createErrorResponse(JSON.stringify({
+              status: 'craft-stopped-before-action', actionSent: craftedCount > 0, serverConfirmed: false, completedOperations: craftedCount,
+              reason: 'runtime-context-changed-before-action: the Minecraft session, bridge session or registry generation changed; re-list the inventory',
+            }));
+          }
+          const conflict = runtimeRecipeConflict(bot, candidate.recipe, mcData, itemsById, getRegistryContext());
+          if (conflict) {
+            runtimeRefusal ??= conflict;
             continue;
           }
 
@@ -495,6 +547,12 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
           }
         }
 
+        if (!craftedThisAttempt && runtimeRefusal) {
+          return factory.createErrorResponse(JSON.stringify({
+            status: 'craft-refused-runtime-identity', actionSent: craftedCount > 0, serverConfirmed: false,
+            completedOperations: craftedCount, reason: runtimeRefusal,
+          }));
+        }
         if (!craftedThisAttempt && attempt === 0) {
           if (bestCannotCraft) {
             return factory.createErrorResponse(bestCannotCraft.message);

@@ -7,6 +7,7 @@ import { ToolFactory } from '../tool-factory.js';
 import { log } from '../logger.js';
 import { coerceCoordinates } from './coordinate-utils.js';
 import type { RuntimeRegistryContext } from '../services/runtime-registry-service.js';
+import { runtimeContextKey } from '../services/registry-reporting.js';
 
 type FaceDirection = 'up' | 'down' | 'north' | 'south' | 'east' | 'west';
 const MAX_FIND_BLOCKS_COUNT = 256;
@@ -49,12 +50,6 @@ async function withEmptyHand<T>(bot: mineflayer.Bot, action: () => Promise<T>): 
       await bot.waitForTicks(1);
     }
   }
-}
-
-/** Identifies one runtime context; any change makes earlier registry-derived decisions stale. */
-function runtimeContextKey(context: RuntimeRegistryContext | null): string {
-  return JSON.stringify(context ? [context.registryEpoch, context.runtimeEpoch, context.mineflayerSessionId, context.minecraftEndpoint,
-    context.bridgeSessionId, context.sourceRegistryEpoch, context.serverIdentity] : null);
 }
 
 const CONTEXT_CHANGED = 'runtime-context-changed-before-action: the Minecraft session, bridge session or registry generation changed; re-observe the target';

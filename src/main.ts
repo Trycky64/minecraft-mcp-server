@@ -107,7 +107,7 @@ async function main() {
   registerChatTools(factory, getBot, messageStore, { profile: config.profile });
   registerFlightTools(factory, getBot);
   registerGameStateTools(factory, getBot);
-  registerCraftingTools(factory, getBot);
+  registerCraftingTools(factory, getBot, getRegistryContext);
   registerFurnaceTools(factory, getBot);
   registerRegistryTools(factory, runtimeRegistry, bridge);
   registerBridgeTools(factory, bridge, runtimeRegistry);

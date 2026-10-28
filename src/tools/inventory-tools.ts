@@ -3,7 +3,7 @@ import mineflayer from 'mineflayer';
 import type { Item } from 'prismarine-item';
 import { ToolFactory } from '../tool-factory.js';
 import type { RuntimeRegistryContext } from '../services/runtime-registry-service.js';
-import { annotateItem, resolveItemType } from '../services/registry-reporting.js';
+import { annotateItem, isUnsafeItemNameStatus, itemMatchesRequest, mineflayerItemNameStatus, resolveItemType } from '../services/registry-reporting.js';
 import { getProtocolDecodeStatus } from '../services/protocol-decode-monitor.js';
 
 interface InventoryItem {
@@ -38,8 +38,15 @@ export function registerInventoryTools(
         : snapshotStatus === 'unverified'
           ? `Inventory snapshot not verified by a complete server packet. ${items.length} stack(s) currently exposed.\n`
           : items.length === 0 ? 'Inventory is empty' : `Found ${items.length} items in inventory:\n\n`;
-      itemList.forEach(item => {
-        inventoryText += `- ${item.name} (x${item.count}) in slot ${item.slot}\n`;
+      itemList.forEach((item, index) => {
+        const stack = items[index]!;
+        const nameStatus = mineflayerItemNameStatus(stack, registryContext);
+        const runtime = resolveItemType(stack.type, registryContext);
+        const runtimeName = runtime?.status === 'resolved' && runtime.provenance.source !== 'minecraft-data' ? runtime.entry.namespacedId : null;
+        const warning = isUnsafeItemNameStatus(nameStatus)
+          ? ` [Mineflayer name not reliable: ${nameStatus}${runtimeName ? `; runtime registry: ${runtimeName}` : ''}; the runtime registry contradicts or cannot confirm it]`
+          : '';
+        inventoryText += `- ${item.name} (x${item.count}) in slot ${item.slot}${warning}\n`;
       });
       inventoryText += `\nRegistry details (JSON):\n${JSON.stringify({
         minecraftVersion: registryContext?.minecraftVersion ?? bot.version,
@@ -72,18 +79,12 @@ export function registerInventoryTools(
       const bot = getBot();
       const items = bot.inventory.items();
       const registryContext = getRegistryContext();
-      const item = items.find((candidate) => {
-        if (nameOrType.includes(':')) {
-          const resolution = resolveItemType(candidate.type, registryContext);
-          if (resolution?.status === 'resolved' && resolution.entry.namespacedId === nameOrType) return true;
-          const legacyKey = candidate.name.includes(':') ? candidate.name : `minecraft:${candidate.name}`;
-          return nameOrType.startsWith('minecraft:') && candidate.name !== 'unknown' && legacyKey === nameOrType;
-        }
-        return candidate.name !== 'unknown' && candidate.name.includes(nameOrType.toLowerCase());
-      });
+      const item = items.find((candidate) => itemMatchesRequest(candidate, nameOrType, registryContext));
 
       if (item) {
-        return factory.createResponse(`Found ${item.count} ${item.name} in inventory (slot ${item.slot})`);
+        const runtime = resolveItemType(item.type, registryContext);
+        const displayName = item.name === 'unknown' && runtime?.status === 'resolved' ? runtime.entry.namespacedId : item.name;
+        return factory.createResponse(`Found ${item.count} ${displayName} in inventory (slot ${item.slot})`);
       } else {
         return factory.createResponse(`Couldn't find any item matching '${nameOrType}' in inventory`);
       }
@@ -95,21 +96,17 @@ export function registerInventoryTools(
     "Equip a specific item",
     {
       itemName: z.string().describe("Name of the item to equip"),
-      destination: z.string().optional().describe("Where to equip the item (default: 'hand')")
+      destination: z.string().optional().describe("Where to equip the item (default: 'hand')"),
+      registryEpoch: z.string().min(1).max(200).optional().describe('Optional registry epoch from the inventory observation; a different current epoch is refused'),
     },
-    async ({ itemName, destination = 'hand' }) => {
+    async ({ itemName, destination = 'hand', registryEpoch }) => {
       const bot = getBot();
       const items = bot.inventory.items();
       const registryContext = getRegistryContext();
-      const item = items.find((candidate) => {
-        if (itemName.includes(':')) {
-          const resolution = resolveItemType(candidate.type, registryContext);
-          if (resolution?.status === 'resolved' && resolution.entry.namespacedId === itemName) return true;
-          const legacyKey = candidate.name.includes(':') ? candidate.name : `minecraft:${candidate.name}`;
-          return itemName.startsWith('minecraft:') && candidate.name !== 'unknown' && legacyKey === itemName;
-        }
-        return candidate.name !== 'unknown' && candidate.name.includes(itemName.toLowerCase());
-      });
+      if (registryEpoch !== undefined && registryContext?.registryEpoch !== registryEpoch) {
+        return factory.createErrorResponse('stale-registry-epoch: re-list the inventory in the current session before equipping');
+      }
+      const item = items.find((candidate) => itemMatchesRequest(candidate, itemName, registryContext));
 
       if (!item) {
         return factory.createResponse(`Couldn't find any item matching '${itemName}' in inventory`);
@@ -127,7 +124,11 @@ export function registerInventoryTools(
         actionSent: true,
         clientObserved: observed,
         serverConfirmed: false,
-        item: { mineflayerName: item.name, rawNumericId: item.type, count: item.count },
+        item: (() => {
+          const annotated = annotateItem(item, registryContext);
+          return { mineflayerName: item.name, rawNumericId: item.type, count: item.count,
+            namespacedId: annotated.namespacedId, mineflayerNameStatus: annotated.mineflayerNameStatus };
+        })(),
         destination,
         destinationSlot,
         note: 'Mineflayer completed equip handling and the local slot model was inspected; no independent server acknowledgement was correlated with this equipment change.',
