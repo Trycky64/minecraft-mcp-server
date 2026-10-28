@@ -391,15 +391,15 @@ test('place-block selects a modded stack only from an authoritative current-epoc
   const factory = new ToolFactory(mockServer, mockConnection);
   const stack = { type: 7001, name: 'unknown', count: 1, slot: 36 };
   const reference = { name: 'stone' };
-  let targetReads = 0;
+  let placed = false;
   const mockBot = {
     version: '1.21.1', entity: { position: new Vec3(0, 64, 0) },
     blockAt: sinon.stub().callsFake((pos: Vec3) => pos.x === 3 && pos.y === 64 && pos.z === 3
-      ? (++targetReads > 2 ? { name: 'unknown', stateId: 9900 } : { name: 'air', stateId: 0 })
+      ? (placed ? { name: 'unknown', stateId: 9900 } : { name: 'air', stateId: 0 })
       : reference),
     inventory: { items: sinon.stub().returns([stack]) }, heldItem: null,
     canSeeBlock: sinon.stub().returns(true), lookAt: sinon.stub().resolves(),
-    equip: sinon.stub().resolves(), placeBlock: sinon.stub().resolves(),
+    equip: sinon.stub().resolves(), placeBlock: sinon.stub().callsFake(async () => { placed = true; }),
   } as unknown as mineflayer.Bot;
   const runtime = new RuntimeRegistryService({ getBot: () => mockBot, isConnected: () => true, getConfig: () => ({ host: '127.0.0.1', port: 25565 }) });
   injectSyntheticBridgeSnapshot(runtime, { item: 'partial' }, [
@@ -419,11 +419,12 @@ test('dig-block distinguishes confirmed mining from an unobserved drop and colle
   const connection = { checkConnectionAndReconnect: sinon.stub().resolves({ connected: true }) } as unknown as BotConnection;
   const factory = new ToolFactory(mockServer, connection);
   const mined = { name: 'oak_log', stateId: 1, position: new Vec3(1, 64, 0) };
+  let dug = false;
   const bot = {
     entity: { position: new Vec3(0, 64, 0) },
-    blockAt: sinon.stub().onFirstCall().returns(mined).onSecondCall().returns({ name: 'air', stateId: 0, position: mined.position }),
+    blockAt: sinon.stub().callsFake(() => dug ? { name: 'air', stateId: 0, position: mined.position } : mined),
     canDigBlock: sinon.stub().returns(true), canSeeBlock: sinon.stub().returns(true),
-    dig: sinon.stub().resolves(), waitForTicks: sinon.stub().resolves(), entities: {},
+    dig: sinon.stub().callsFake(async () => { dug = true; }), waitForTicks: sinon.stub().resolves(), entities: {},
     inventory: { items: sinon.stub().returns([]) },
   } as unknown as mineflayer.Bot;
   registerBlockTools(factory, () => bot);
@@ -445,11 +446,12 @@ test('dig-block uses an empty hand and restores the selected slot without touchi
   slots[36] = held;
   const inventoryItem = { items: sinon.stub().returns([held]), slots, hotbarStart: 36 };
   const mined = { name: 'oak_log', stateId: 131, position: new Vec3(1, 64, 0) };
+  let dug = false;
   const bot = {
     entity: { position: new Vec3(0, 64, 0) },
-    blockAt: sinon.stub().onFirstCall().returns(mined).onSecondCall().returns({ name: 'air', stateId: 0, position: mined.position }),
+    blockAt: sinon.stub().callsFake(() => dug ? { name: 'air', stateId: 0, position: mined.position } : mined),
     canDigBlock: sinon.stub().returns(true), canSeeBlock: sinon.stub().returns(true),
-    dig: sinon.stub().callsFake(async () => { t.is(bot.quickBarSlot, 1); t.is(bot.heldItem, null); }),
+    dig: sinon.stub().callsFake(async () => { t.is(bot.quickBarSlot, 1); t.is(bot.heldItem, null); dug = true; }),
     waitForTicks: sinon.stub().resolves(), entities: {}, inventory: inventoryItem,
     quickBarSlot: 0, heldItem: held,
     setQuickBarSlot: sinon.stub().callsFake((slot: number) => { bot.quickBarSlot = slot; bot.heldItem = slot === 1 ? null : held; }),

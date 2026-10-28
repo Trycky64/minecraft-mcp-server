@@ -51,6 +51,36 @@ async function withEmptyHand<T>(bot: mineflayer.Bot, action: () => Promise<T>): 
   }
 }
 
+/** Identifies one runtime context; any change makes earlier registry-derived decisions stale. */
+function runtimeContextKey(context: RuntimeRegistryContext | null): string {
+  return JSON.stringify(context ? [context.registryEpoch, context.runtimeEpoch, context.mineflayerSessionId, context.minecraftEndpoint,
+    context.bridgeSessionId, context.sourceRegistryEpoch, context.serverIdentity] : null);
+}
+
+const CONTEXT_CHANGED = 'runtime-context-changed-before-action: the Minecraft session, bridge session or registry generation changed; re-observe the target';
+
+/**
+ * Mineflayer derives names, hardness and shapes from static minecraft-data.
+ * Returns a refusal reason when the current runtime state registry shows that
+ * this static view does not describe the block the server actually has.
+ */
+function runtimeBlockStateConflict(block: { name: string; stateId: number }, context: RuntimeRegistryContext | null): string | null {
+  if (!context?.registryService || !context.minecraftVersion || !context.registryEpoch || !Number.isSafeInteger(block.stateId)) return null;
+  const resolution = context.registryService.resolve({ kind: 'blockState', minecraftVersion: context.minecraftVersion, registryEpoch: context.registryEpoch, numericId: block.stateId });
+  const staticName = block.name.includes(':') ? block.name : `minecraft:${block.name}`;
+  if (resolution.status === 'resolved') {
+    return resolution.provenance.source !== 'minecraft-data' && resolution.entry.namespacedId !== staticName
+      ? `runtime-identity-contradicts-mineflayer: state ${block.stateId} is ${resolution.entry.namespacedId} on this server, not ${staticName}`
+      : null;
+  }
+  if (resolution.status === 'ambiguous') return `runtime-block-state-mapping-ambiguous: state ${block.stateId}`;
+  if (resolution.status === 'unresolved' && resolution.reason === 'identifier-not-found') {
+    return `block-state-absent-from-complete-runtime-registry: state ${block.stateId} is not ${staticName} on this server`;
+  }
+  if (resolution.status === 'unavailable' && resolution.reason === 'stale-context') return 'stale-registry-context';
+  return null;
+}
+
 interface FaceOption {
   direction: string;
   vector: Vec3;
@@ -70,16 +100,22 @@ export function registerBlockTools(
       z: z.coerce.number().describe("Z coordinate"),
       faceDirection: z.enum(['up', 'down', 'north', 'south', 'east', 'west']).optional().describe("Direction to place against (default: 'down')"),
       itemId: z.string().regex(/^[a-z0-9_.-]+:[a-z0-9/._-]+$/).optional().describe("Optional namespaced item to place; modded items require a runtime mapping for this session"),
-      timeoutMs: z.number().int().min(100).max(30_000).optional().describe('Maximum time for placement pathfinding (default 15 seconds, max 30 seconds)')
+      timeoutMs: z.number().int().min(100).max(30_000).optional().describe('Maximum time for placement pathfinding (default 15 seconds, max 30 seconds)'),
+      registryEpoch: z.string().min(1).max(200).optional().describe('Optional registry epoch from the observation this placement relies on; a different current epoch is refused'),
     },
-    async ({ x, y, z, faceDirection = 'down', itemId, timeoutMs = 15_000 }: { x: number, y: number, z: number, faceDirection?: FaceDirection, itemId?: string, timeoutMs?: number }) => {
+    async ({ x, y, z, faceDirection = 'down', itemId, timeoutMs = 15_000, registryEpoch }: { x: number, y: number, z: number, faceDirection?: FaceDirection, itemId?: string, timeoutMs?: number, registryEpoch?: string }) => {
       ({ x, y, z } = coerceCoordinates(x, y, z));
 
       const bot = getBot();
+      const startContext = getRegistryContext();
+      const startContextKey = runtimeContextKey(startContext);
+      if (registryEpoch !== undefined && startContext?.registryEpoch !== registryEpoch) {
+        return factory.createErrorResponse('stale-registry-epoch: re-observe the placement target in the current session');
+      }
       let itemToPlace: ReturnType<typeof bot.inventory.items>[number] | null = null;
       const previousHeldItem = bot.heldItem;
       if (itemId !== undefined) {
-        const context = getRegistryContext();
+        const context = startContext;
         if (!context?.registryService || !context.minecraftVersion || !context.registryEpoch) {
           return factory.createErrorResponse(`Cannot place ${itemId}: no active runtime registry session is available`);
         }
@@ -114,7 +150,20 @@ export function registerBlockTools(
       if (blockAtPos && blockAtPos.name !== 'air') {
         return factory.createResponse(`There's already a block (${blockAtPos.name}) at (${x}, ${y}, ${z})`);
       }
+      const targetConflict = runtimeBlockStateConflict(blockAtPos, startContext);
+      if (targetConflict) {
+        return factory.createErrorResponse(`Cannot safely place at (${x}, ${y}, ${z}): ${targetConflict}; no placement packet was sent`);
+      }
       const stateBeforePlacement = blockAtPos.stateId;
+      // Re-validated after every await, immediately before each packet-sending call.
+      const preActionRefusal = (referencePos: Vec3, referenceStateId: number): string | null => {
+        if (getBot() !== bot || runtimeContextKey(getRegistryContext()) !== startContextKey) return CONTEXT_CHANGED;
+        const target = bot.blockAt(placePos);
+        const reference = bot.blockAt(referencePos);
+        if (!target || target.name !== 'air' || target.stateId !== stateBeforePlacement) return 'placement-target-changed-before-action';
+        if (!reference || reference.stateId !== referenceStateId) return 'placement-reference-changed-before-action';
+        return runtimeBlockStateConflict(target, getRegistryContext()) ?? runtimeBlockStateConflict(reference, getRegistryContext());
+      };
 
       const possibleFaces: FaceOption[] = [
         { direction: 'down', vector: new Vec3(0, -1, 0) },
@@ -133,12 +182,17 @@ export function registerBlockTools(
       }
 
       let unresolvedReferenceCount = 0;
+      let contradictedReferenceCount = 0;
       for (const face of possibleFaces) {
         const referencePos = placePos.plus(face.vector);
         const referenceBlock = bot.blockAt(referencePos);
 
         if (referenceBlock?.name === 'unknown') {
           unresolvedReferenceCount += 1;
+          continue;
+        }
+        if (referenceBlock && referenceBlock.name !== 'air' && runtimeBlockStateConflict(referenceBlock, startContext)) {
+          contradictedReferenceCount += 1;
           continue;
         }
         if (referenceBlock && referenceBlock.name !== 'air') {
@@ -159,8 +213,20 @@ export function registerBlockTools(
 
           await bot.lookAt(placePos, true);
 
+          let refusal = preActionRefusal(referencePos, referenceStateId);
+          if (!refusal && itemToPlace && itemToPlace !== bot.heldItem) {
+            try { await bot.equip(itemToPlace, 'hand'); }
+            catch (equipError) {
+              return factory.createErrorResponse(`Could not equip ${itemId}; no placement packet was sent: ${equipError instanceof Error ? equipError.message : String(equipError)}`);
+            }
+            refusal = preActionRefusal(referencePos, referenceStateId);
+            if (refusal && previousHeldItem && bot.heldItem !== previousHeldItem) {
+              try { await bot.equip(previousHeldItem, 'hand'); } catch { log('warn', 'Placement was refused but hotbar restoration failed.'); }
+            }
+          }
+          if (refusal) return factory.createErrorResponse(`Cannot safely place at (${x}, ${y}, ${z}): ${refusal}; no placement packet was sent`);
+
           try {
-            if (itemToPlace && itemToPlace !== bot.heldItem) await bot.equip(itemToPlace, 'hand');
             await bot.placeBlock(currentReference, face.vector.scaled(-1));
           } catch (placeError) {
             if (itemToPlace && previousHeldItem && bot.heldItem !== previousHeldItem) {
@@ -191,6 +257,9 @@ export function registerBlockTools(
         }
       }
 
+      if (contradictedReferenceCount > 0) {
+        return factory.createErrorResponse(`Cannot safely place block at (${x}, ${y}, ${z}): ${contradictedReferenceCount} potential reference block(s) have runtime identities that contradict Mineflayer; no placement packet was sent`);
+      }
       return unresolvedReferenceCount > 0
         ? factory.createErrorResponse(`Cannot safely place block at (${x}, ${y}, ${z}): ${unresolvedReferenceCount} potential reference block(s) have unresolved Mineflayer definitions`)
         : factory.createResponse(`Failed to place block at (${x}, ${y}, ${z}): No suitable reference block found`);
@@ -205,11 +274,17 @@ export function registerBlockTools(
       y: z.coerce.number().finite().min(-2048).max(2048).describe("Y coordinate"),
       z: z.coerce.number().finite().min(-30_000_000).max(30_000_000).describe("Z coordinate"),
       timeoutMs: z.number().int().min(100).max(MAX_DIG_TIMEOUT_MS).optional().describe("Maximum time for pathfinding or digging (default 15000ms, max 30000ms)"),
+      registryEpoch: z.string().min(1).max(200).optional().describe('Optional registry epoch from the observation this dig relies on; a different current epoch is refused'),
     },
-    async ({ x, y, z, timeoutMs = DEFAULT_DIG_TIMEOUT_MS }: { x: number; y: number; z: number; timeoutMs?: number }) => {
+    async ({ x, y, z, timeoutMs = DEFAULT_DIG_TIMEOUT_MS, registryEpoch }: { x: number; y: number; z: number; timeoutMs?: number; registryEpoch?: string }) => {
       ({ x, y, z } = coerceCoordinates(x, y, z));
 
       const bot = getBot();
+      const startContext = getRegistryContext();
+      const startContextKey = runtimeContextKey(startContext);
+      if (registryEpoch !== undefined && startContext?.registryEpoch !== registryEpoch) {
+        return factory.createErrorResponse('stale-registry-epoch: re-observe the dig target in the current session');
+      }
       const blockPos = new Vec3(x, y, z);
       let block = bot.blockAt(blockPos);
 
@@ -222,10 +297,21 @@ export function registerBlockTools(
       if (block.name === 'unknown') {
         return factory.createErrorResponse(`Cannot safely dig unresolved Mineflayer block at (${x}, ${y}, ${z}); raw state ID: ${block.stateId}`);
       }
+      const identityConflict = runtimeBlockStateConflict(block, startContext);
+      if (identityConflict) {
+        return factory.createErrorResponse(`Cannot safely dig at (${x}, ${y}, ${z}): ${identityConflict}; Mineflayer's static dig data does not apply, no dig action was sent`);
+      }
       if (bot.entity.position.distanceTo(block.position.offset(0.5, 0.5, 0.5)) > MAX_DIG_DISTANCE) {
         return factory.createErrorResponse(`Dig target is too far; maximum distance is ${MAX_DIG_DISTANCE} blocks`);
       }
       const initialStateId = block.stateId;
+      // Re-validated after every await, immediately before the dig packet.
+      const preActionRefusal = (): string | null => {
+        if (getBot() !== bot || runtimeContextKey(getRegistryContext()) !== startContextKey) return CONTEXT_CHANGED;
+        const current = bot.blockAt(blockPos);
+        if (!current || current.stateId !== initialStateId || current.name === 'air' || current.name === 'unknown') return 'dig-target-changed-before-action';
+        return runtimeBlockStateConflict(current, getRegistryContext());
+      };
       const inventoryBefore = inventoryCounts(bot);
       const droppedBefore = new Set(droppedItemsNear(bot, blockPos, new Set()).map((item) => item.entityId));
 
@@ -272,8 +358,11 @@ export function registerBlockTools(
       }
       let timer: ReturnType<typeof setTimeout> | undefined;
       let timedOut = false;
+      let refusal: string | null = null;
       try {
-        await withEmptyHand(bot, async () => {
+        refusal = await withEmptyHand(bot, async () => {
+          const preDigRefusal = preActionRefusal();
+          if (preDigRefusal) return preDigRefusal;
           const dig = bot.dig(block);
           const timeout = new Promise<never>((_, reject) => {
             timer = setTimeout(() => {
@@ -288,10 +377,12 @@ export function registerBlockTools(
             dig.catch(() => {});
             throw error;
           }
+          return null;
         });
       } finally {
         if (timer) clearTimeout(timer);
       }
+      if (refusal) return factory.createErrorResponse(`Cannot safely dig at (${x}, ${y}, ${z}): ${refusal}; no dig action was sent`);
       const observed = bot.blockAt(blockPos);
       if (!observed || observed.name !== 'air') {
         return factory.createErrorResponse(`Dig request completed but the final block state was not confirmed as air at (${x}, ${y}, ${z})`);
