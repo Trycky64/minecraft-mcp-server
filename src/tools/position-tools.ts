@@ -125,7 +125,7 @@ export function registerPositionTools(factory: ToolFactory, getBot: () => minefl
       const bot = getBot();
       bot.setControlState('jump', true);
       setTimeout(() => bot.setControlState('jump', false), 250);
-      return factory.createResponse("Successfully jumped");
+      return factory.createResponse("Jump requested (jump control held for 250 ms); the resulting movement is not confirmed");
     }
   );
 
@@ -144,7 +144,7 @@ export function registerPositionTools(factory: ToolFactory, getBot: () => minefl
       } finally {
         bot.setControlState(direction, false);
       }
-      return factory.createResponse(`Moved ${direction} for ${duration}ms`);
+      return factory.createResponse(`Moved ${direction} for ${duration}ms (control state held; the resulting position is not confirmed)`);
     }
   );
 }
