@@ -351,7 +351,9 @@ export function registerBlockTools(
       const stateResolution = stateId === null || !context?.registryService || !context.minecraftVersion
         ? null
         : context.registryService.resolve({ kind: 'blockState', minecraftVersion: context.minecraftVersion, registryEpoch: context.registryEpoch ?? undefined, numericId: stateId });
-      const blockResolution = rawBlockId === null || !context?.registryService || !context.minecraftVersion
+      // Mineflayer derives block.type from its static state table, so it is not a
+      // server registry number; it is only resolved when no state ID was observed.
+      const blockResolution = stateId !== null || rawBlockId === null || !context?.registryService || !context.minecraftVersion
         ? null
         : context.registryService.resolve({ kind: 'block', minecraftVersion: context.minecraftVersion, registryEpoch: context.registryEpoch ?? undefined, numericId: rawBlockId });
       const resolution = stateResolution?.status === 'resolved'
@@ -359,11 +361,17 @@ export function registerBlockTools(
         : blockResolution?.status === 'resolved'
           ? blockResolution
           : stateResolution ?? blockResolution;
+      const staticName = block.name !== 'unknown' ? (block.name.includes(':') ? block.name : `minecraft:${block.name}`) : null;
+      const mineflayerNameStatus = resolution?.status !== 'resolved' || resolution.provenance.source === 'minecraft-data' || staticName === null
+        ? 'not-checked-against-runtime-registry'
+        : resolution.entry.namespacedId === staticName ? 'matches-runtime-registry' : 'contradicts-runtime-registry';
+      const nameContradicted = mineflayerNameStatus === 'contradicts-runtime-registry';
       let properties: unknown = undefined;
       if (stateResolution?.status === 'resolved' && stateResolution.entry.blockStateProperties) {
         properties = stateResolution.entry.blockStateProperties;
       }
-      const propertiesAreGrounded = stateId === null ? resolution?.status === 'resolved' : stateResolution?.status === 'resolved';
+      // Mineflayer parses properties from its static table; they never describe a contradicting runtime block.
+      const propertiesAreGrounded = !nameContradicted && (stateId === null ? resolution?.status === 'resolved' : stateResolution?.status === 'resolved');
       if (properties === undefined && propertiesAreGrounded && typeof block.getProperties === 'function') {
         try { properties ??= block.getProperties(); } catch { /* Preserve bridge properties when Mineflayer parsing fails. */ }
       }
@@ -391,15 +399,19 @@ export function registerBlockTools(
         minecraftVersion: context?.minecraftVersion ?? bot.version,
         registryEpoch: context?.registryEpoch ?? null,
         mineflayerName: block.name,
-        mineflayerNameReliable: block.name !== 'unknown',
-        mineflayerNameConfidence: block.name !== 'unknown' ? 'version-static' : 'unresolved',
+        mineflayerNameReliable: block.name !== 'unknown' && !nameContradicted,
+        mineflayerNameConfidence: nameContradicted ? 'contradicted-by-runtime-registry' : block.name !== 'unknown' ? 'version-static' : 'unresolved',
+        mineflayerNameStatus,
         mineflayerType: block.type ?? null,
         diggable: block.diggable,
         canDigBlock: (() => { try { return bot.canDigBlock(block); } catch { return null; } })(),
         canSeeBlock: (() => { try { return bot.canSeeBlock(block); } catch { return null; } })(),
         distanceToBlockCenter: (() => { try { return bot.entity.position.distanceTo(block.position.offset(0.5, 0.5, 0.5)); } catch { return null; } })(),
       };
-      return factory.createResponse(`Found ${block.name} (type: ${block.type}) at position (${block.position.x}, ${block.position.y}, ${block.position.z})\nRegistry details (JSON):\n${JSON.stringify(details)}`);
+      const displayName = nameContradicted && resolution?.status === 'resolved'
+        ? `${resolution.entry.namespacedId} [Mineflayer static name '${block.name}' contradicts the runtime registry]`
+        : block.name;
+      return factory.createResponse(`Found ${displayName} (type: ${block.type}) at position (${block.position.x}, ${block.position.y}, ${block.position.z})\nRegistry details (JSON):\n${JSON.stringify(details)}`);
     }
   );
 
@@ -423,7 +435,14 @@ export function registerBlockTools(
       const stateEntries = service?.getEntries({ kind: 'blockState', minecraftVersion: version, namespacedId, registryEpoch: context?.registryEpoch ?? undefined, limit: null }) ?? [];
       const runtimeStateEntries = stateEntries.filter((entry) => entry.provenance.source !== 'minecraft-data' && entry.registryEpoch === context?.registryEpoch);
       const candidateStateEntries = runtimeStateEntries.length > 0 ? runtimeStateEntries : stateEntries;
-      const stateIds = [...new Set(candidateStateEntries.flatMap((entry) => Number.isSafeInteger(entry.numericId) ? [entry.numericId!] : []))];
+      // A state ID that the current runtime registry assigns to another block is contradicted,
+      // whether the candidate came from minecraft-data or from an ambiguous runtime mapping.
+      const contradictedStateIds = new Set((service?.getEntries({ kind: 'blockState', minecraftVersion: version, registryEpoch: context?.registryEpoch ?? undefined, limit: null }) ?? [])
+        .filter((entry) => entry.provenance.source !== 'minecraft-data' && entry.registryEpoch === context?.registryEpoch &&
+          entry.namespacedId !== namespacedId && Number.isSafeInteger(entry.numericId))
+        .map((entry) => entry.numericId!));
+      const candidateStateIds = [...new Set(candidateStateEntries.flatMap((entry) => Number.isSafeInteger(entry.numericId) ? [entry.numericId!] : []))];
+      const stateIds = candidateStateIds.filter((stateId) => !contradictedStateIds.has(stateId));
       const mappingConfidence = runtimeStateEntries.length > 0 ? 'session-observed' : 'version-static-unverified';
       const completeRuntimeStateCoverage = service?.getSnapshots().some((snapshot) =>
         snapshot.source !== 'minecraft-data' && snapshot.registryEpoch === context?.registryEpoch &&
@@ -435,7 +454,8 @@ export function registerBlockTools(
         return factory.createResponse(JSON.stringify({ status, reason: 'block-identifier-not-resolved', requested: namespacedId, resolution: blockResolution ?? null }));
       }
       if (stateIds.length === 0) {
-        return factory.createResponse(JSON.stringify({ status: 'unresolved', reason: 'block-state-ids-unavailable', requested: namespacedId, blockResolution }));
+        const reason = candidateStateIds.length > 0 ? 'candidate-state-ids-contradicted-by-runtime-registry' : 'block-state-ids-unavailable';
+        return factory.createResponse(JSON.stringify({ status: 'unresolved', reason, requested: namespacedId, blockResolution }));
       }
 
       const center = bot.entity.position.floored();

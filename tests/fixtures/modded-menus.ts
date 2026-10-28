@@ -63,6 +63,11 @@ export interface ModdedServerRegistry {
   items: Array<[number, string]>;
   menuCoverage?: 'complete' | 'partial';
   itemCoverage?: 'complete' | 'partial';
+  /** Server block registry IDs (not Mineflayer's static block.type). */
+  blocks?: Array<[number, string]>;
+  /** Server block state IDs with their authoritative properties, when the bridge reports them. */
+  blockStates?: Array<[number, string, Record<string, string>?]>;
+  blockStateCoverage?: 'complete' | 'partial';
 }
 
 let sequence = 0;
@@ -92,8 +97,11 @@ export function createModdedSession(bot: FakeBot) {
     const context = runtime.getContext();
     const menuCoverage = registry.menuCoverage ?? 'partial';
     const itemCoverage = registry.itemCoverage ?? 'partial';
-    const entry = (kind: RegistryKind, numericId: number, namespacedId: string, coverage: 'complete' | 'partial'): RegistryEntry => ({
-      kind, minecraftVersion: MINECRAFT_VERSION, namespacedId, numericId, numericIdScope: 'server-registry-generation', registryEpoch: context.registryEpoch!,
+    const blockStateCoverage = registry.blockStateCoverage ?? 'partial';
+    const entry = (kind: RegistryKind, numericId: number, namespacedId: string, coverage: 'complete' | 'partial', blockStateProperties?: Record<string, string>): RegistryEntry => ({
+      kind, minecraftVersion: MINECRAFT_VERSION, namespacedId, numericId, registryEpoch: context.registryEpoch!,
+      numericIdScope: kind === 'blockState' ? 'server-block-state-generation' : 'server-registry-generation',
+      ...(blockStateProperties ? { blockStateProperties } : {}),
       provenance: {
         source: 'neoforge-bridge', authority: 'authenticated-runtime', minecraftVersion: MINECRAFT_VERSION,
         registryEpoch: context.registryEpoch!, runtimeEpoch: context.runtimeEpoch!, minecraftEndpoint: endpoint,
@@ -108,10 +116,14 @@ export function createModdedSession(bot: FakeBot) {
       mineflayerSessionId: context.mineflayerSessionId!, mineflayerRegistryEpoch: context.mineflayerRegistryEpoch!,
       bridgeSessionId: session.sessionId, sourceRegistryEpoch: session.sourceRegistryEpoch, serverIdentity: session.serverIdentity,
       neoForgeVersion: session.neoForgeVersion, observedAt: new Date(0).toISOString(),
-      availableRegistries: ['menu', 'item'], registryCoverage: { menu: menuCoverage, item: itemCoverage },
+      availableRegistries: ['menu', 'item', ...(registry.blocks ? ['block'] : []), ...(registry.blockStates ? ['blockState'] : [])],
+      registryCoverage: { menu: menuCoverage, item: itemCoverage, ...(registry.blocks ? { block: 'partial' as const } : {}),
+        ...(registry.blockStates ? { blockState: blockStateCoverage } : {}) },
       entries: [
         ...registry.menus.map(([id, name]) => entry('menu', id, name, menuCoverage)),
         ...registry.items.map(([id, name]) => entry('item', id, name, itemCoverage)),
+        ...(registry.blocks ?? []).map(([id, name]) => entry('block', id, name, 'partial')),
+        ...(registry.blockStates ?? []).map(([id, name, properties]) => entry('blockState', id, name, blockStateCoverage, properties)),
       ],
     }, session.sessionId);
     return session;
