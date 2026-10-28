@@ -369,18 +369,36 @@ function getAllRecipes(mcData: unknown): unknown[] {
  * describe the server's items: a contradicted output, or an inventory stack
  * whose static name Mineflayer could use as an ingredient.
  */
+function staticOutputStatus(recipe: unknown, mcData: unknown, itemsById: McDataItemsById, context: RuntimeRegistryContext | null) {
+  const result = getRecipeResult(recipe, itemsById);
+  const outputId = result ? (mcData as { itemsByName?: Record<string, { id?: unknown }> }).itemsByName?.[result.name]?.id : undefined;
+  if (!result || typeof outputId !== 'number') return null;
+  return { name: result.name, id: outputId, status: mineflayerItemNameStatus({ type: outputId, name: result.name }, context) };
+}
+
+function recipeOutputConflict(recipe: unknown, mcData: unknown, itemsById: McDataItemsById, context: RuntimeRegistryContext | null): string | null {
+  const output = staticOutputStatus(recipe, mcData, itemsById, context);
+  if (!output || !isUnsafeItemNameStatus(output.status)) return null;
+  const runtime = resolveItemType(output.id, context);
+  return `recipe-output-contradicted-by-runtime-registry: output ${output.name} (ID ${output.id}) is ${runtime?.status === 'resolved' ? runtime.entry.namespacedId : output.status} on this server`;
+}
+
+/** Inventory as recipe evaluation may count it: stacks with contradicted static names are excluded. */
+function trustedInventory(bot: mineflayer.Bot, context: RuntimeRegistryContext | null): InventoryItem[] {
+  return bot.inventory.items()
+    .filter((item) => !isUnsafeItemNameStatus(mineflayerItemNameStatus(item, context)))
+    .map((item) => ({ name: item.name, count: item.count }));
+}
+
+function recipeProvenanceNote(version: string): string {
+  return `Recipe source: static minecraft-data ${version}; recipe shapes and ingredients are not confirmed by the server.`;
+}
+
 function runtimeRecipeConflict(bot: mineflayer.Bot, recipe: unknown, mcData: unknown, itemsById: McDataItemsById,
   context: RuntimeRegistryContext | null): string | null {
   if (!context?.registryService) return null;
-  const result = getRecipeResult(recipe, itemsById);
-  const outputId = result ? (mcData as { itemsByName?: Record<string, { id?: unknown }> }).itemsByName?.[result.name]?.id : undefined;
-  if (result && typeof outputId === 'number') {
-    const status = mineflayerItemNameStatus({ type: outputId, name: result.name }, context);
-    if (isUnsafeItemNameStatus(status)) {
-      const runtime = resolveItemType(outputId, context);
-      return `recipe-output-contradicted-by-runtime-registry: output ${result.name} (ID ${outputId}) is ${runtime?.status === 'resolved' ? runtime.entry.namespacedId : status} on this server`;
-    }
-  }
+  const outputConflict = recipeOutputConflict(recipe, mcData, itemsById, context);
+  if (outputConflict) return outputConflict;
   const ingredientNames = new Set(parseRecipeIngredientOptions(recipe, itemsById).flatMap(({ options }) => options));
   for (const stack of bot.inventory.items()) {
     if (!ingredientNames.has(stack.name)) continue;
@@ -405,7 +423,8 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
       const mcData = minecraftData(bot.version);
       const itemsById = (mcData as unknown as { items: McDataItemsById }).items;
       const recipes = getAllRecipes(mcData);
-      const inventory = bot.inventory.items().map(item => ({ name: item.name, count: item.count }));
+      const context = getRegistryContext();
+      const inventory = trustedInventory(bot, context);
 
       if (!recipes || recipes.length === 0) {
         return factory.createResponse("No recipes available for this Minecraft version");
@@ -420,7 +439,7 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
         const match = outputItem ? classifyNameMatch(result.name, outputItem) : { exact: false, partial: true };
         if (outputItem && !match.partial) continue;
 
-        if (canCraftRecipe(recipe, inventory, itemsById)) {
+        if (canCraftRecipe(recipe, inventory, itemsById) && !recipeOutputConflict(recipe, mcData, itemsById, context)) {
           const ingredients = parseRecipeIngredients(recipe, itemsById);
           availableRecipes.push({
             name: result.name,
@@ -449,6 +468,7 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
         output += `${index + 1}. ${recipe.name} (x${recipe.count})\n`;
         output += `   Ingredients: ${recipe.ingredients.map(i => `${i.name} x${i.count}`).join(", ")}\n\n`;
       });
+      output += recipeProvenanceNote(bot.version);
 
       return factory.createResponse(output);
     }
@@ -592,7 +612,8 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
       const mcData = minecraftData(bot.version);
       const itemsById = (mcData as unknown as { items: McDataItemsById }).items;
       const recipes = getAllRecipes(mcData);
-      const inventory = bot.inventory.items().map(item => ({ name: item.name, count: item.count }));
+      const context = getRegistryContext();
+      const inventory = trustedInventory(bot, context);
 
       if (!recipes || recipes.length === 0) {
         return factory.createErrorResponse("No recipes available");
@@ -607,12 +628,15 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
         .map((c) => {
           const ingredients = parseRecipeIngredients(c.recipe, itemsById);
           const evaluation = evaluateRecipeMissing(c.recipe, inventory, itemsById);
+          const runtimeConflict = recipeOutputConflict(c.recipe, mcData, itemsById, context);
           return {
             result: c.resultName,
             resultCount: c.resultCount,
             ingredients,
-            canCraft: evaluation.canCraft,
-            missingTotal: evaluation.missingTotal
+            canCraft: evaluation.canCraft && !runtimeConflict,
+            missingTotal: evaluation.missingTotal,
+            runtimeConflict,
+            outputConfirmed: staticOutputStatus(c.recipe, mcData, itemsById, context)?.status === 'matches-runtime-registry',
           };
         })
         .sort((a, b) => {
@@ -628,7 +652,8 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
 
       matchingRecipes.forEach((recipe, index) => {
         output += `${index + 1}. Output: ${recipe.result} (x${recipe.resultCount})`;
-        output += recipe.canCraft ? ' [craftable]\n' : ` [missing: ${recipe.missingTotal}]\n`;
+        output += recipe.runtimeConflict ? ` [runtime conflict: ${recipe.runtimeConflict}]` : recipe.canCraft ? ' [craftable]' : ` [missing: ${recipe.missingTotal}]`;
+        output += recipe.outputConfirmed ? ' (output ID confirmed by the runtime registry)\n' : '\n';
         output += `   Ingredients:\n`;
 
         for (const ingredient of recipe.ingredients) {
@@ -636,6 +661,7 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
         }
         output += '\n';
       });
+      output += recipeProvenanceNote(bot.version);
 
       return factory.createResponse(output);
     }
@@ -652,7 +678,8 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
       const mcData = minecraftData(bot.version);
       const itemsById = (mcData as unknown as { items: McDataItemsById }).items;
       const recipes = getAllRecipes(mcData);
-      const inventory = bot.inventory.items().map(item => ({ name: item.name, count: item.count }));
+      const context = getRegistryContext();
+      const inventory = trustedInventory(bot, context);
 
       if (!recipes || recipes.length === 0) {
         return factory.createErrorResponse("No recipes available");
@@ -666,12 +693,18 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
       if (candidates.length === 0) return factory.createResponse(`No recipe found for ${itemName}`);
 
       let bestCannotCraft: { missingTotal: number; message: string } | null = null;
+      let runtimeConflict: string | null = null;
 
       for (const candidate of candidates) {
         const evaluation = evaluateRecipeMissing(candidate.recipe, inventory, itemsById);
+        const conflict = recipeOutputConflict(candidate.recipe, mcData, itemsById, context);
+        if (conflict) {
+          runtimeConflict ??= conflict;
+          continue;
+        }
 
         if (evaluation.canCraft) {
-          return factory.createResponse(`Yes, can craft ${candidate.resultName}. Have all required ingredients.`);
+          return factory.createResponse(`Yes, can craft ${candidate.resultName}. Have all required ingredients.\n${recipeProvenanceNote(bot.version)}`);
         }
 
         let output = `Cannot craft ${candidate.resultName}. Missing:\n`;
@@ -684,6 +717,7 @@ export function registerCraftingTools(factory: ToolFactory, getBot: () => minefl
         }
       }
 
+      if (runtimeConflict && !bestCannotCraft) return factory.createResponse(`No, cannot safely craft ${itemName}: ${runtimeConflict}`);
       return factory.createResponse(bestCannotCraft?.message ?? `No recipe found for ${itemName}`);
     }
   );

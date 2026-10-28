@@ -108,7 +108,7 @@ async function main() {
   registerFlightTools(factory, getBot);
   registerGameStateTools(factory, getBot);
   registerCraftingTools(factory, getBot, getRegistryContext);
-  registerFurnaceTools(factory, getBot);
+  registerFurnaceTools(factory, getBot, getRegistryContext);
   registerRegistryTools(factory, runtimeRegistry, bridge);
   registerBridgeTools(factory, bridge, runtimeRegistry);
   registerGuiTools(factory, guiHarness, bridge, runtimeRegistry);

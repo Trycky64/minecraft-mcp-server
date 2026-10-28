@@ -36,6 +36,28 @@ export function runtimeContextKey(context: RuntimeRegistryContext | null): strin
     context.bridgeSessionId, context.sourceRegistryEpoch, context.serverIdentity] : null);
 }
 
+/**
+ * Mineflayer derives names, hardness and shapes from static minecraft-data.
+ * Returns a refusal reason when the current runtime state registry shows that
+ * this static view does not describe the block the server actually has.
+ */
+export function runtimeBlockStateConflict(block: { name: string; stateId: number }, context: RuntimeRegistryContext | null): string | null {
+  if (!context?.registryService || !context.minecraftVersion || !context.registryEpoch || !Number.isSafeInteger(block.stateId)) return null;
+  const resolution = context.registryService.resolve({ kind: 'blockState', minecraftVersion: context.minecraftVersion, registryEpoch: context.registryEpoch, numericId: block.stateId });
+  const staticName = block.name.includes(':') ? block.name : `minecraft:${block.name}`;
+  if (resolution.status === 'resolved') {
+    return resolution.provenance.source !== 'minecraft-data' && resolution.entry.namespacedId !== staticName
+      ? `runtime-identity-contradicts-mineflayer: state ${block.stateId} is ${resolution.entry.namespacedId} on this server, not ${staticName}`
+      : null;
+  }
+  if (resolution.status === 'ambiguous') return `runtime-block-state-mapping-ambiguous: state ${block.stateId}`;
+  if (resolution.status === 'unresolved' && resolution.reason === 'identifier-not-found') {
+    return `block-state-absent-from-complete-runtime-registry: state ${block.stateId} is not ${staticName} on this server`;
+  }
+  if (resolution.status === 'unavailable' && resolution.reason === 'stale-context') return 'stale-registry-context';
+  return null;
+}
+
 export function resolveItemType(type: unknown, context: RuntimeRegistryContext | null): RegistryResolution | null {
   if (typeof type !== 'number' || !Number.isSafeInteger(type) || !context?.registryService || !context.minecraftVersion) return null;
   return context.registryService.resolve({

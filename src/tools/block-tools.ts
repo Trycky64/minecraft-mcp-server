@@ -7,7 +7,7 @@ import { ToolFactory } from '../tool-factory.js';
 import { log } from '../logger.js';
 import { coerceCoordinates } from './coordinate-utils.js';
 import type { RuntimeRegistryContext } from '../services/runtime-registry-service.js';
-import { runtimeContextKey } from '../services/registry-reporting.js';
+import { runtimeBlockStateConflict, runtimeContextKey } from '../services/registry-reporting.js';
 
 type FaceDirection = 'up' | 'down' | 'north' | 'south' | 'east' | 'west';
 const MAX_FIND_BLOCKS_COUNT = 256;
@@ -53,28 +53,6 @@ async function withEmptyHand<T>(bot: mineflayer.Bot, action: () => Promise<T>): 
 }
 
 const CONTEXT_CHANGED = 'runtime-context-changed-before-action: the Minecraft session, bridge session or registry generation changed; re-observe the target';
-
-/**
- * Mineflayer derives names, hardness and shapes from static minecraft-data.
- * Returns a refusal reason when the current runtime state registry shows that
- * this static view does not describe the block the server actually has.
- */
-function runtimeBlockStateConflict(block: { name: string; stateId: number }, context: RuntimeRegistryContext | null): string | null {
-  if (!context?.registryService || !context.minecraftVersion || !context.registryEpoch || !Number.isSafeInteger(block.stateId)) return null;
-  const resolution = context.registryService.resolve({ kind: 'blockState', minecraftVersion: context.minecraftVersion, registryEpoch: context.registryEpoch, numericId: block.stateId });
-  const staticName = block.name.includes(':') ? block.name : `minecraft:${block.name}`;
-  if (resolution.status === 'resolved') {
-    return resolution.provenance.source !== 'minecraft-data' && resolution.entry.namespacedId !== staticName
-      ? `runtime-identity-contradicts-mineflayer: state ${block.stateId} is ${resolution.entry.namespacedId} on this server, not ${staticName}`
-      : null;
-  }
-  if (resolution.status === 'ambiguous') return `runtime-block-state-mapping-ambiguous: state ${block.stateId}`;
-  if (resolution.status === 'unresolved' && resolution.reason === 'identifier-not-found') {
-    return `block-state-absent-from-complete-runtime-registry: state ${block.stateId} is not ${staticName} on this server`;
-  }
-  if (resolution.status === 'unavailable' && resolution.reason === 'stale-context') return 'stale-registry-context';
-  return null;
-}
 
 interface FaceOption {
   direction: string;
